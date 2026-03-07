@@ -19,12 +19,14 @@ const INITIAL_CHECKLIST: ChecklistItem[] = [
   { id: "7", label: "Compiling Results", status: "pending" },
 ];
 
-function CitadelleWallet() {
+function CitadelleWallet({ balance }: { balance: number }) {
   return (
     <div className="flex items-center gap-2" data-testid="wallet-container">
       <div className="flex items-center gap-2 rounded-full bg-white dark:bg-card border border-border px-4 py-2 shadow-sm">
         <Wallet className="w-4 h-4 text-muted-foreground" />
-        <span className="text-sm font-semibold tracking-tight" data-testid="text-wallet-balance">$100.00</span>
+        <span className="text-sm font-semibold tracking-tight tabular-nums" data-testid="text-wallet-balance">
+          ${balance.toFixed(2)}
+        </span>
       </div>
       <Button
         size="sm"
@@ -81,13 +83,13 @@ function AgentChecklist({ items, isComplete }: { items: ChecklistItem[]; isCompl
   );
 }
 
-function LiveSandbox({ isComplete }: { isComplete: boolean }) {
+function LiveSandbox({ isComplete, frameUrl, completionMessage }: { isComplete: boolean; frameUrl: string | null; completionMessage: string }) {
   return (
     <div
       className="bg-gray-950 flex flex-col h-full"
       data-testid="live-sandbox"
     >
-      <div className="flex items-center gap-2 px-5 py-3 border-b border-gray-800/80">
+      <div className="flex items-center gap-2 px-5 py-3 border-b border-gray-800/80 shrink-0">
         <div className="flex items-center gap-1.5 mr-3">
           <div className="w-3 h-3 rounded-full bg-red-500/70" />
           <div className="w-3 h-3 rounded-full bg-yellow-500/70" />
@@ -105,26 +107,16 @@ function LiveSandbox({ isComplete }: { isComplete: boolean }) {
             <span className="text-xs font-medium text-emerald-400">Complete</span>
           </motion.div>
         )}
+        {!isComplete && frameUrl && (
+          <div className="ml-auto flex items-center gap-1.5 px-2.5 py-1 rounded-full bg-blue-500/10 border border-blue-500/20">
+            <div className="w-1.5 h-1.5 rounded-full bg-blue-400 animate-pulse-slow" />
+            <span className="text-xs font-medium text-blue-400">Live</span>
+          </div>
+        )}
       </div>
-      <div className="flex-1 flex items-center justify-center p-8">
+      <div className="flex-1 flex items-center justify-center min-h-0 relative">
         <AnimatePresence mode="wait">
-          {!isComplete ? (
-            <motion.div
-              key="loading"
-              initial={{ opacity: 1 }}
-              exit={{ opacity: 0, scale: 0.95 }}
-              transition={{ duration: 0.3 }}
-              className="text-center space-y-4"
-            >
-              <div className="w-12 h-12 rounded-full border-2 border-gray-700 border-t-gray-400 animate-spin mx-auto" />
-              <p
-                className="text-gray-500 text-sm font-mono animate-pulse-slow"
-                data-testid="text-sandbox-status"
-              >
-                Awaiting server connection...
-              </p>
-            </motion.div>
-          ) : (
+          {isComplete ? (
             <motion.div
               key="complete"
               initial={{ opacity: 0, scale: 0.9, y: 10 }}
@@ -147,7 +139,7 @@ function LiveSandbox({ isComplete }: { isComplete: boolean }) {
                   Task Completed
                 </p>
                 <p className="text-gray-400 text-sm font-mono" data-testid="text-sandbox-result">
-                  50 PACER documents extracted and synthesized.
+                  {completionMessage}
                 </p>
               </div>
               <div className="flex items-center justify-center gap-3 pt-2">
@@ -155,6 +147,37 @@ function LiveSandbox({ isComplete }: { isComplete: boolean }) {
                 <span className="text-xs text-gray-600 font-mono">Session terminated successfully</span>
                 <div className="w-1.5 h-1.5 rounded-full bg-emerald-500/60" />
               </div>
+            </motion.div>
+          ) : frameUrl ? (
+            <motion.div
+              key="frame"
+              initial={{ opacity: 0 }}
+              animate={{ opacity: 1 }}
+              transition={{ duration: 0.3 }}
+              className="w-full h-full"
+            >
+              <img
+                src={frameUrl}
+                alt="Live browser view"
+                className="w-full h-full object-contain"
+                data-testid="img-sandbox-frame"
+              />
+            </motion.div>
+          ) : (
+            <motion.div
+              key="loading"
+              initial={{ opacity: 1 }}
+              exit={{ opacity: 0, scale: 0.95 }}
+              transition={{ duration: 0.3 }}
+              className="text-center space-y-4"
+            >
+              <div className="w-12 h-12 rounded-full border-2 border-gray-700 border-t-gray-400 animate-spin mx-auto" />
+              <p
+                className="text-gray-500 text-sm font-mono animate-pulse-slow"
+                data-testid="text-sandbox-status"
+              >
+                Awaiting server connection...
+              </p>
             </motion.div>
           )}
         </AnimatePresence>
@@ -168,45 +191,96 @@ export default function Home() {
   const [isWorkspaceActive, setIsWorkspaceActive] = useState(false);
   const [submittedQuery, setSubmittedQuery] = useState("");
   const [checklist, setChecklist] = useState<ChecklistItem[]>(INITIAL_CHECKLIST);
-  const intervalRef = useRef<ReturnType<typeof setInterval> | null>(null);
-
-  const isComplete = useMemo(
-    () => checklist.every((item) => item.status === "done"),
-    [checklist]
-  );
+  const [balance, setBalance] = useState(100.0);
+  const [frameUrl, setFrameUrl] = useState<string | null>(null);
+  const [completionMessage, setCompletionMessage] = useState("");
+  const [isComplete, setIsComplete] = useState(false);
+  const wsRef = useRef<WebSocket | null>(null);
 
   useEffect(() => {
     return () => {
-      if (intervalRef.current) clearInterval(intervalRef.current);
+      if (wsRef.current) {
+        wsRef.current.close();
+        wsRef.current = null;
+      }
     };
   }, []);
 
-  const simulateProgress = useCallback(() => {
-    if (intervalRef.current) clearInterval(intervalRef.current);
-    let step = 0;
-    intervalRef.current = setInterval(() => {
-      setChecklist((prev) =>
-        prev.map((item, idx) => {
-          if (idx === step) return { ...item, status: "active" as const };
-          if (idx < step) return { ...item, status: "done" as const };
-          return item;
-        })
-      );
-      step++;
-      if (step > INITIAL_CHECKLIST.length) {
-        if (intervalRef.current) clearInterval(intervalRef.current);
-        intervalRef.current = null;
-      }
-    }, 1800);
+  const updateChecklistToStep = useCallback((step: number) => {
+    setChecklist((prev) =>
+      prev.map((item, idx) => {
+        if (idx === step - 1) return { ...item, status: "active" as const };
+        if (idx < step - 1) return { ...item, status: "done" as const };
+        return item;
+      })
+    );
   }, []);
+
+  const markAllDone = useCallback(() => {
+    setChecklist((prev) => prev.map((item) => ({ ...item, status: "done" as const })));
+    setIsComplete(true);
+  }, []);
+
+  const startAgent = useCallback((searchQuery: string) => {
+    if (wsRef.current) {
+      wsRef.current.close();
+      wsRef.current = null;
+    }
+
+    setFrameUrl(null);
+    setIsComplete(false);
+    setCompletionMessage("");
+    setChecklist(INITIAL_CHECKLIST);
+
+    const protocol = window.location.protocol === "https:" ? "wss:" : "ws:";
+    const ws = new WebSocket(`${protocol}//${window.location.host}/ws/agent`);
+    wsRef.current = ws;
+
+    ws.onopen = () => {
+      ws.send(JSON.stringify({ type: "START_AGENT", query: searchQuery }));
+    };
+
+    ws.onmessage = (event) => {
+      try {
+        const msg = JSON.parse(event.data);
+
+        switch (msg.type) {
+          case "STEP":
+            updateChecklistToStep(msg.step);
+            break;
+          case "FRAME":
+            setFrameUrl(`data:image/jpeg;base64,${msg.image}`);
+            break;
+          case "COST_DEDUCT":
+            setBalance((prev) => Math.max(0, parseFloat((prev - msg.amount).toFixed(2))));
+            break;
+          case "COMPLETE":
+            markAllDone();
+            setCompletionMessage(msg.message);
+            break;
+          case "ERROR":
+            console.error("Agent error:", msg.message);
+            break;
+        }
+      } catch {
+      }
+    };
+
+    ws.onclose = () => {
+      if (wsRef.current === ws) wsRef.current = null;
+    };
+
+    ws.onerror = () => {
+      if (wsRef.current === ws) wsRef.current = null;
+    };
+  }, [updateChecklistToStep, markAllDone]);
 
   const handleSubmit = (e: React.FormEvent) => {
     e.preventDefault();
     if (!query.trim()) return;
     setSubmittedQuery(query.trim());
     setIsWorkspaceActive(true);
-    setChecklist(INITIAL_CHECKLIST);
-    simulateProgress();
+    startAgent(query.trim());
   };
 
   return (
@@ -220,7 +294,7 @@ export default function Home() {
             Citadelle
           </span>
         </div>
-        <CitadelleWallet />
+        <CitadelleWallet balance={balance} />
       </header>
 
       <main className="flex-1 flex flex-col min-h-0">
@@ -403,7 +477,7 @@ export default function Home() {
                 </div>
 
                 <div className="flex-1 min-h-0">
-                  <LiveSandbox isComplete={isComplete} />
+                  <LiveSandbox isComplete={isComplete} frameUrl={frameUrl} completionMessage={completionMessage} />
                 </div>
               </div>
             </motion.div>
