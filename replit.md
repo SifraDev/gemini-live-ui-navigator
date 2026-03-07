@@ -65,9 +65,17 @@ Messages from client to server:
 - Maps to frontend format: caseTitle, court, date, snippet, url
 - Uses Replit AI Integrations (AI_INTEGRATIONS_GEMINI_API_KEY, AI_INTEGRATIONS_GEMINI_BASE_URL)
 
-## System Dependencies
+## Cloud Deployment (GCP Cloud Run)
+- `Dockerfile` - Uses `mcr.microsoft.com/playwright:v1.52.0-noble` base image with all Chromium deps
+- `cloudbuild.yaml` - Infrastructure-as-Code for Google Cloud Build → Cloud Run automated deployment
+- `.dockerignore` - Excludes node_modules, .git, .env from Docker context
+- `DEPLOYMENT.md` - Full deployment instructions with gcloud CLI commands
+- Cloud Run config: 2 vCPU, 2GB RAM, port 8080, session affinity for WebSocket, 300s timeout
+
+## System Dependencies (Replit)
 Requires Nix packages for Playwright Chromium: glib, nss, nspr, atk, cups, libdrm, gtk3, pango, cairo, mesa, dbus, libxkbcommon, and X11 libs.
 
 ## Running
-- `npm run dev` starts Express backend + Vite frontend on port 5000
+- **Dev (Replit)**: `npm run dev` starts Express backend + Vite frontend on port 5000
+- **Production (Cloud Run)**: `npm run build` then `npm start` on port 8080
 - WebSocket endpoint: `/ws/agent`

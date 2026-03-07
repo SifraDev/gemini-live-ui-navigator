@@ -1,0 +1,14 @@
+node_modules
+.git
+.env
+.env.*
+dist
+.replit
+replit.nix
+.config
+.local
+.cache
+*.md
+!DEPLOYMENT.md
+attached_assets
+/tmp
