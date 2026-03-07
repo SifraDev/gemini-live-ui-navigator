@@ -13,10 +13,11 @@ A B2B legal tech web application with a clean, minimalist Perplexity-style inter
 ## Key Features
 - Central search bar with "Run Agent" functionality
 - Citadelle Wallet component (top-right pill with balance + Top Up)
-- Live Agent Workspace with split-screen layout:
-  - Left: Agent progress checklist + export options
-  - Right: Live Browser Sandbox placeholder
-- Smooth animated transition from search landing to workspace view
+- Full-viewport command center workspace (25/75 split):
+  - Left sidebar (25%): Agent progress checklist + export options
+  - Right workspace (75%): Live Browser Sandbox - edge-to-edge dark panel
+- Completion state: sandbox shows success screen, export buttons enable with emerald glow
+- Smooth Framer Motion transitions between search landing and command center
 
 ## Project Structure
 - `client/src/pages/home.tsx` - Main page with search, wallet, and workspace
@@ -28,7 +29,7 @@ A B2B legal tech web application with a clean, minimalist Perplexity-style inter
 - Font: Inter (sans), JetBrains Mono (mono)
 - Clean white/light-gray background
 - Primary blue accent colors
-- Emerald green for wallet/status indicators
+- Emerald green for wallet/status/completion indicators
 - Dark gray/black for sandbox area
 
 ## Running
