@@ -284,17 +284,18 @@ async function startAgent(ws: WebSocket, userQuery: string) {
         await delay(400);
 
         await searchInput.click();
-        await delay(300);
+        await page.waitForTimeout(500);
 
         if (isStale()) return;
 
-        for (const char of searchQuery) {
-          if (isStale()) break;
-          await page.keyboard.type(char, { delay: 0 });
-          await delay(80 + Math.random() * 60);
-        }
+        await page.keyboard.type(searchQuery, { delay: 150 });
+        await page.waitForTimeout(500);
 
-        await delay(600);
+        await page.fill("input[name='q']", searchQuery).catch(() => {
+          log("fill() fallback failed, keyboard type should suffice", "agent");
+        });
+
+        await page.waitForTimeout(300);
         if (isStale()) return;
 
         const searchButton = await page.$("button[type='submit'], input[type='submit']").catch(() => null);
@@ -304,26 +305,13 @@ async function startAgent(ws: WebSocket, userQuery: string) {
           if (btnBox) {
             await moveCursorTo(page, btnBox.x + btnBox.width / 2, btnBox.y + btnBox.height / 2);
             await delay(400);
-
-            await Promise.all([
-              page.waitForNavigation({ waitUntil: "domcontentloaded", timeout: 20000 }).catch(() => {}),
-              searchButton.click(),
-            ]);
-          } else {
-            await Promise.all([
-              page.waitForNavigation({ waitUntil: "domcontentloaded", timeout: 20000 }).catch(() => {}),
-              page.keyboard.press("Enter"),
-            ]);
           }
-        } else {
-          await Promise.all([
-            page.waitForNavigation({ waitUntil: "domcontentloaded", timeout: 20000 }).catch(() => {}),
-            page.keyboard.press("Enter"),
-          ]);
         }
-      } else {
+
         await Promise.all([
-          page.waitForNavigation({ waitUntil: "domcontentloaded", timeout: 20000 }).catch(() => {}),
+          page.waitForNavigation({ waitUntil: "domcontentloaded", timeout: 30000 }).catch((e) => {
+            log(`Nav warning: ${e.message}`, "agent");
+          }),
           page.keyboard.press("Enter"),
         ]);
       }
