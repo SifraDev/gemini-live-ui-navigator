@@ -12,9 +12,9 @@ interface ChecklistItem {
 const INITIAL_CHECKLIST: ChecklistItem[] = [
   { id: "1", label: "Initializing Engine", status: "pending" },
   { id: "2", label: "Parsing Query Parameters", status: "pending" },
-  { id: "3", label: "Navigating PACER", status: "pending" },
-  { id: "4", label: "Authenticating Session", status: "pending" },
-  { id: "5", label: "Extracting PDFs", status: "pending" },
+  { id: "3", label: "Navigating to CourtListener", status: "pending" },
+  { id: "4", label: "Executing Search Query", status: "pending" },
+  { id: "5", label: "Extracting Results", status: "pending" },
   { id: "6", label: "Analyzing Documents", status: "pending" },
   { id: "7", label: "Compiling Results", status: "pending" },
 ];

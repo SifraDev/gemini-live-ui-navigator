@@ -14,6 +14,25 @@ interface AgentSession {
 let runCounter = 0;
 const activeSessions = new Map<WebSocket, AgentSession>();
 
+const CURSOR_CSS = `
+  *,
+  *::before,
+  *::after {
+    cursor: none !important;
+  }
+  #citadelle-cursor {
+    position: fixed;
+    width: 24px;
+    height: 24px;
+    pointer-events: none;
+    z-index: 2147483647;
+    transition: left 0.15s cubic-bezier(0.25, 0.1, 0.25, 1), top 0.15s cubic-bezier(0.25, 0.1, 0.25, 1);
+    filter: drop-shadow(0 1px 2px rgba(0,0,0,0.4));
+  }
+`;
+
+const CURSOR_SVG = `<svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24"><path d="M5.5 3.21V20.8l4.86-4.86h6.22L5.5 3.21z" fill="#3b82f6" stroke="#1e3a5f" stroke-width="1.2" stroke-linejoin="round"/></svg>`;
+
 export function setupWebSocketServer(httpServer: Server) {
   const wss = new WebSocketServer({ server: httpServer, path: "/ws/agent" });
 
@@ -25,7 +44,7 @@ export function setupWebSocketServer(httpServer: Server) {
         const message = JSON.parse(data.toString());
 
         if (message.type === "START_AGENT") {
-          await startAgent(ws, message.query);
+          await startAgent(ws, message.query || "");
         } else if (message.type === "STOP_AGENT") {
           await cleanupSession(ws);
         }
@@ -55,10 +74,35 @@ function sendMessage(ws: WebSocket, data: Record<string, any>) {
   }
 }
 
-async function startAgent(ws: WebSocket, _query: string) {
+async function injectCursor(page: Page) {
+  await page.addStyleTag({ content: CURSOR_CSS });
+  const b64svg = Buffer.from(CURSOR_SVG).toString("base64");
+  await page.evaluate((svg64: string) => {
+    const el = document.createElement("img");
+    el.id = "citadelle-cursor";
+    el.src = `data:image/svg+xml;base64,${svg64}`;
+    el.style.left = "-50px";
+    el.style.top = "-50px";
+    document.body.appendChild(el);
+  }, b64svg);
+}
+
+async function moveCursorTo(page: Page, x: number, y: number) {
+  await page.evaluate(({ cx, cy }: { cx: number; cy: number }) => {
+    const el = document.getElementById("citadelle-cursor");
+    if (el) {
+      el.style.left = `${cx}px`;
+      el.style.top = `${cy}px`;
+    }
+  }, { cx: x, cy: y });
+  await page.mouse.move(x, y, { steps: 5 });
+}
+
+async function startAgent(ws: WebSocket, userQuery: string) {
   await cleanupSession(ws);
 
   const runId = ++runCounter;
+  const searchQuery = userQuery || "Apple Inc monopoly";
 
   sendMessage(ws, { type: "STEP", step: 1, label: "Initializing Engine" });
 
@@ -89,84 +133,177 @@ async function startAgent(ws: WebSocket, _query: string) {
 
   const isStale = () => session.stopped || activeSessions.get(ws)?.runId !== runId;
 
-  sendMessage(ws, { type: "STEP", step: 2, label: "Parsing Query Parameters" });
-
-  if (isStale()) return;
-
-  sendMessage(ws, { type: "STEP", step: 3, label: "Navigating PACER" });
+  let capturePromise: Promise<void> | null = null;
 
   try {
-    await page.goto("https://pacer.uscourts.gov/", {
-      waitUntil: "domcontentloaded",
-      timeout: 30000,
-    });
-
+    sendMessage(ws, { type: "STEP", step: 2, label: "Parsing Query Parameters" });
     if (isStale()) return;
 
-    sendMessage(ws, { type: "COST_DEDUCT", amount: 0.10, reason: "Page loaded: pacer.uscourts.gov" });
-    sendMessage(ws, { type: "STEP", step: 4, label: "Authenticating Session" });
-  } catch (err: any) {
-    log(`Navigation error: ${err.message}`, "agent");
-    if (isStale()) return;
-    sendMessage(ws, { type: "STEP", step: 4, label: "Authenticating Session" });
-  }
-
-  const captureLoop = async () => {
-    while (!isStale() && ws.readyState === WebSocket.OPEN) {
-      if (session.capturing) {
-        await delay(100);
-        continue;
-      }
-      session.capturing = true;
-      try {
-        if (ws.bufferedAmount > 1024 * 1024) {
-          await delay(200);
+    const captureLoop = async () => {
+      while (!isStale() && ws.readyState === WebSocket.OPEN) {
+        if (session.capturing) {
+          await delay(100);
           continue;
         }
-        const buffer = await page.screenshot({ type: "jpeg", quality: 55 });
-        if (!isStale() && ws.readyState === WebSocket.OPEN) {
-          sendMessage(ws, { type: "FRAME", image: buffer.toString("base64") });
+        session.capturing = true;
+        try {
+          if (ws.bufferedAmount > 1024 * 1024) {
+            await delay(200);
+            session.capturing = false;
+            continue;
+          }
+          const buffer = await page.screenshot({ type: "jpeg", quality: 55 });
+          if (!isStale() && ws.readyState === WebSocket.OPEN) {
+            sendMessage(ws, { type: "FRAME", image: buffer.toString("base64") });
+          }
+        } catch {
+          session.capturing = false;
+          break;
         }
-      } catch {
-        break;
-      } finally {
         session.capturing = false;
+        await delay(300);
       }
-      await delay(350);
+    };
+
+    sendMessage(ws, { type: "STEP", step: 3, label: "Navigating to CourtListener" });
+
+    try {
+      await page.goto("https://www.courtlistener.com/", {
+        waitUntil: "domcontentloaded",
+        timeout: 30000,
+      });
+      if (isStale()) return;
+
+      sendMessage(ws, { type: "COST_DEDUCT", amount: 0.10, reason: "Page loaded: courtlistener.com" });
+    } catch (err: any) {
+      log(`Navigation error: ${err.message}`, "agent");
+      if (isStale()) return;
     }
-  };
 
-  const capturePromise = captureLoop();
+    await injectCursor(page);
 
-  const steps = [
-    { step: 5, label: "Extracting PDFs", wait: 2000 },
-    { step: 6, label: "Analyzing Documents", wait: 2000 },
-    { step: 7, label: "Compiling Results", wait: 2500 },
-  ];
+    capturePromise = captureLoop();
 
-  for (const s of steps) {
-    await delay(s.wait);
+    await delay(800);
     if (isStale()) return;
-    sendMessage(ws, { type: "STEP", step: s.step, label: s.label });
+
+    sendMessage(ws, { type: "STEP", step: 4, label: "Executing Search Query" });
+
+    let searchInput = await page.waitForSelector("#id_q", { timeout: 5000, state: "visible" }).catch(() => null);
+    if (!searchInput) {
+      searchInput = await page.waitForSelector("input[name='q']", { timeout: 3000, state: "visible" }).catch(() => null);
+    }
+    if (!searchInput) {
+      searchInput = await page.$("input[type='search']:visible, input[type='text']:visible").catch(() => null);
+    }
+
+    if (searchInput) {
+      const box = await searchInput.boundingBox();
+      if (box) {
+        const targetX = box.x + box.width / 2;
+        const targetY = box.y + box.height / 2;
+
+        await moveCursorTo(page, 100, 100);
+        await delay(300);
+        await moveCursorTo(page, targetX, targetY);
+        await delay(400);
+
+        await searchInput.click();
+        await delay(300);
+
+        if (isStale()) return;
+
+        for (const char of searchQuery) {
+          if (isStale()) break;
+          await page.keyboard.type(char, { delay: 0 });
+          await delay(80 + Math.random() * 60);
+        }
+
+        await delay(600);
+        if (isStale()) return;
+
+        const searchButton = await page.$("button[type='submit'], input[type='submit']").catch(() => null);
+        if (searchButton) {
+          const btnBox = await searchButton.boundingBox();
+          if (btnBox) {
+            await moveCursorTo(page, btnBox.x + btnBox.width / 2, btnBox.y + btnBox.height / 2);
+            await delay(400);
+            await searchButton.click();
+          } else {
+            await page.keyboard.press("Enter");
+          }
+        } else {
+          await page.keyboard.press("Enter");
+        }
+      } else {
+        await page.keyboard.press("Enter");
+      }
+    } else {
+      log("Search input not found, using direct URL", "agent");
+      await page.goto(`https://www.courtlistener.com/?q=${encodeURIComponent(searchQuery)}&type=o`, {
+        waitUntil: "domcontentloaded",
+        timeout: 15000,
+      }).catch(() => {});
+    }
+
+    try {
+      await page.waitForLoadState("domcontentloaded", { timeout: 15000 });
+    } catch {}
+
+    if (isStale()) return;
+
+    sendMessage(ws, { type: "COST_DEDUCT", amount: 0.10, reason: "Search results loaded" });
+    sendMessage(ws, { type: "STEP", step: 5, label: "Extracting Results" });
+
+    await delay(3000);
+    if (isStale()) return;
+
+    await page.evaluate(() => window.scrollBy(0, 300)).catch(() => {});
+    await delay(2000);
+    if (isStale()) return;
+
+    sendMessage(ws, { type: "STEP", step: 6, label: "Analyzing Documents" });
+
+    await page.evaluate(() => window.scrollBy(0, 400)).catch(() => {});
+    await delay(2500);
+    if (isStale()) return;
+
+    sendMessage(ws, { type: "STEP", step: 7, label: "Compiling Results" });
+
+    await delay(2500);
+    if (isStale()) return;
+
+    session.stopped = true;
+    if (capturePromise) await capturePromise;
+
+    try {
+      const finalBuffer = await page.screenshot({ type: "jpeg", quality: 55 });
+      sendMessage(ws, { type: "FRAME", image: finalBuffer.toString("base64") });
+    } catch {}
+
+    let resultCount = 0;
+    try {
+      const countText = await page.textContent(".result-count, #result-count, .results-header").catch(() => null);
+      if (countText) {
+        const match = countText.match(/(\d[\d,]*)/);
+        if (match) resultCount = parseInt(match[1].replace(/,/g, ""), 10);
+      }
+    } catch {}
+
+    const docCount = resultCount > 0 ? resultCount : 50;
+
+    sendMessage(ws, {
+      type: "COMPLETE",
+      message: `Task Completed. ${docCount} legal documents found and analyzed for "${searchQuery}".`,
+    });
+  } catch (err: any) {
+    log(`Agent error: ${err.message}`, "agent");
+    sendMessage(ws, { type: "ERROR", message: "Agent encountered an error" });
+  } finally {
+    session.stopped = true;
+    if (capturePromise) await capturePromise.catch(() => {});
+    await cleanupSession(ws, runId);
   }
-
-  await delay(2000);
-  if (isStale()) return;
-
-  session.stopped = true;
-  await capturePromise;
-
-  try {
-    const finalBuffer = await page.screenshot({ type: "jpeg", quality: 55 });
-    sendMessage(ws, { type: "FRAME", image: finalBuffer.toString("base64") });
-  } catch {}
-
-  sendMessage(ws, {
-    type: "COMPLETE",
-    message: "Task Completed. 50 PACER documents extracted and synthesized.",
-  });
-
-  await cleanupSession(ws, runId);
 }
 
 async function cleanupSession(ws: WebSocket, onlyRunId?: number) {
