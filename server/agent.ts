@@ -177,7 +177,11 @@ async function startAgent(ws: WebSocket, userQuery: string) {
 
   let page: Page;
   try {
-    page = await browser.newPage({ viewport: { width: 1280, height: 800 } });
+    page = await browser.newPage({
+      viewport: { width: 1280, height: 800 },
+      userAgent:
+        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36",
+    });
   } catch (err: any) {
     log(`Failed to create page: ${err.message}`, "agent");
     await browser.close().catch(() => {});
