@@ -1,7 +1,16 @@
 import { WebSocketServer, WebSocket } from "ws";
 import type { Server } from "http";
 import { chromium, type Browser, type Page } from "playwright";
+import { GoogleGenAI } from "@google/genai";
 import { log } from "./index";
+
+const ai = new GoogleGenAI({
+  apiKey: process.env.AI_INTEGRATIONS_GEMINI_API_KEY,
+  httpOptions: {
+    apiVersion: "",
+    baseUrl: process.env.AI_INTEGRATIONS_GEMINI_BASE_URL,
+  },
+});
 
 interface AgentSession {
   runId: number;
@@ -337,7 +346,7 @@ async function startAgent(ws: WebSocket, userQuery: string) {
     await injectCursor(page);
 
     sendMessage(ws, { type: "COST_DEDUCT", amount: 0.10, reason: "Search results loaded" });
-    sendMessage(ws, { type: "STEP", step: 5, label: "Extracting Documents" });
+    sendMessage(ws, { type: "STEP", step: 5, label: "Gemini Multimodal: Visually Analyzing Documents..." });
 
     await delay(1500);
     if (isStale()) return;
@@ -349,41 +358,69 @@ async function startAgent(ws: WebSocket, userQuery: string) {
 
     let extractedResults: Array<{ caseTitle: string; court: string; date: string; url: string; snippet: string }> = [];
     try {
-      extractedResults = await page.$$eval(
-        "article",
-        (elements) => {
-          return elements.slice(0, 5).map((el) => {
-            const linkEl = el.querySelector("a.visitable");
-            const fullText = linkEl?.textContent?.trim() || "Untitled Case";
+      const visionBuffer = await page.screenshot({ type: "jpeg", quality: 100 });
+      const visionBase64 = visionBuffer.toString("base64");
 
-            const courtMatch = fullText.match(/\(([^)]+)\)\s*$/);
-            const court = courtMatch ? courtMatch[1].replace(/\u00a0/g, " ").trim() : "";
-            const caseTitle = courtMatch ? fullText.replace(courtMatch[0], "").trim() : fullText;
+      log("Sending screenshot to Gemini for multimodal analysis...", "agent");
 
-            const href = linkEl?.getAttribute("href") || "";
-            const cleanHref = href.split("?")[0];
-            const url = cleanHref.startsWith("http") ? cleanHref : cleanHref ? `https://www.courtlistener.com${cleanHref}` : "";
+      const currentUrl = page.url();
 
-            const timeEl = el.querySelector("time.meta-data-value");
-            const date = timeEl?.getAttribute("datetime") || timeEl?.textContent?.trim() || "";
+      const geminiResponse = await ai.models.generateContent({
+        model: "gemini-2.5-flash",
+        contents: [
+          {
+            role: "user",
+            parts: [
+              {
+                inlineData: {
+                  mimeType: "image/jpeg",
+                  data: visionBase64,
+                },
+              },
+              {
+                text: `You are a highly precise Legal UI Navigator AI. Look at this screenshot of a legal database search result page from CourtListener (${currentUrl}). Extract the top 3 to 5 legal cases you see on the screen. Return ONLY a strict JSON array of objects with the following keys: "title" (Case Title), "court" (Court Name), "date" (Filing Date), "citation" (Legal citation string), and "url" (reconstruct the CourtListener URL as https://www.courtlistener.com/opinion/[id]/[slug]/ if you can read the link, otherwise leave empty). Do not return markdown formatting, code fences, or any text before/after the JSON. Only output the raw JSON array.`,
+              },
+            ],
+          },
+        ],
+        config: {
+          maxOutputTokens: 2048,
+        },
+      });
 
-            const citationEl = Array.from(el.querySelectorAll(".meta-data-header")).find(
-              (h) => h.textContent?.includes("Citations")
-            );
-            const snippet = citationEl
-              ? (citationEl.nextElementSibling as HTMLElement)?.textContent?.trim() || ""
-              : "";
+      const responseText = geminiResponse.text?.trim() || "";
+      log(`Gemini response received (${responseText.length} chars)`, "agent");
 
-            return { caseTitle, court, date, url, snippet };
-          });
+      let jsonText = responseText;
+      const fenceMatch = responseText.match(/```(?:json)?\s*([\s\S]*?)```/);
+      if (fenceMatch) {
+        jsonText = fenceMatch[1].trim();
+      } else {
+        const bracketMatch = responseText.match(/\[[\s\S]*\]/);
+        if (bracketMatch) {
+          jsonText = bracketMatch[0];
         }
-      );
-      log(`Extracted ${extractedResults.length} results from CourtListener`, "agent");
+      }
+
+      const parsed = JSON.parse(jsonText);
+
+      if (Array.isArray(parsed) && parsed.length > 0) {
+        extractedResults = parsed.slice(0, 5).map((item: any) => ({
+          caseTitle: item.title || item.caseTitle || "Untitled Case",
+          court: item.court || "",
+          date: item.date || "",
+          url: item.url || "",
+          snippet: item.citation || item.snippet || "",
+        }));
+        log(`Gemini extracted ${extractedResults.length} cases via vision`, "agent");
+      } else {
+        log("Gemini returned empty or non-array response", "agent");
+      }
     } catch (err: any) {
       if (isNavigationError(err)) {
-        log("Extraction skipped (page navigating)", "agent");
+        log("Vision extraction skipped (page navigating)", "agent");
       } else {
-        log(`Extraction error: ${err.message}`, "agent");
+        log(`Gemini vision extraction error: ${err.message}`, "agent");
       }
     }
 
@@ -429,7 +466,7 @@ async function startAgent(ws: WebSocket, userQuery: string) {
       }
     } catch {}
 
-    const docCount = resultCount > 0 ? resultCount : extractedResults.length || 50;
+    const docCount = resultCount > 0 ? resultCount : (extractedResults.length > 0 ? extractedResults.length : 0);
 
     sendMessage(ws, {
       type: "COMPLETE",

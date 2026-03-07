@@ -25,7 +25,7 @@ const INITIAL_CHECKLIST: ChecklistItem[] = [
   { id: "2", label: "Parsing Query Parameters", status: "pending" },
   { id: "3", label: "Navigating to CourtListener", status: "pending" },
   { id: "4", label: "Executing Search Query", status: "pending" },
-  { id: "5", label: "Extracting Documents", status: "pending" },
+  { id: "5", label: "Gemini Multimodal: Visually Analyzing Documents...", status: "pending" },
   { id: "6", label: "Analyzing Documents", status: "pending" },
   { id: "7", label: "Compiling Results", status: "pending" },
 ];
