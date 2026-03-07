@@ -1,7 +1,10 @@
 import { useState, useCallback, useRef, useEffect, useMemo } from "react";
-import { Search, Play, Wallet, Plus, Check, Circle, FileText, Sheet, Monitor, CheckCircle2, Sparkles } from "lucide-react";
+import { Search, Play, Wallet, Plus, Check, Circle, FileText, FileDown, Monitor, CheckCircle2, Sparkles } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { motion, AnimatePresence } from "framer-motion";
+import { jsPDF } from "jspdf";
+import { Document, Packer, Paragraph, TextRun, HeadingLevel, ExternalHyperlink, BorderStyle, AlignmentType, Tab, TabStopPosition, TabStopType } from "docx";
+import { saveAs } from "file-saver";
 
 interface ChecklistItem {
   id: string;
@@ -9,12 +12,20 @@ interface ChecklistItem {
   status: "pending" | "active" | "done";
 }
 
+interface ExtractedResult {
+  caseTitle: string;
+  court: string;
+  date: string;
+  url: string;
+  snippet: string;
+}
+
 const INITIAL_CHECKLIST: ChecklistItem[] = [
   { id: "1", label: "Initializing Engine", status: "pending" },
   { id: "2", label: "Parsing Query Parameters", status: "pending" },
   { id: "3", label: "Navigating to CourtListener", status: "pending" },
   { id: "4", label: "Executing Search Query", status: "pending" },
-  { id: "5", label: "Extracting Results", status: "pending" },
+  { id: "5", label: "Extracting Documents", status: "pending" },
   { id: "6", label: "Analyzing Documents", status: "pending" },
   { id: "7", label: "Compiling Results", status: "pending" },
 ];
@@ -186,6 +197,408 @@ function LiveSandbox({ isComplete, frameUrl, completionMessage }: { isComplete: 
   );
 }
 
+function generatePdfReport(results: ExtractedResult[], queryText: string) {
+  const doc = new jsPDF({ orientation: "portrait", unit: "mm", format: "a4" });
+  const pageWidth = doc.internal.pageSize.getWidth();
+  const margin = 20;
+  const contentWidth = pageWidth - margin * 2;
+  let y = margin;
+
+  doc.setFillColor(15, 23, 42);
+  doc.rect(0, 0, pageWidth, 45, "F");
+
+  doc.setTextColor(255, 255, 255);
+  doc.setFont("helvetica", "bold");
+  doc.setFontSize(22);
+  doc.text("CITADELLE", margin, 20);
+
+  doc.setFont("helvetica", "normal");
+  doc.setFontSize(10);
+  doc.setTextColor(148, 163, 184);
+  doc.text("Legal Research Report", margin, 28);
+
+  doc.setFontSize(8);
+  doc.text(`Generated: ${new Date().toLocaleDateString("en-US", { year: "numeric", month: "long", day: "numeric" })}`, margin, 36);
+  doc.text(`Report ID: CIT-${Date.now().toString(36).toUpperCase()}`, pageWidth - margin - 50, 36);
+
+  y = 55;
+
+  doc.setDrawColor(59, 130, 246);
+  doc.setLineWidth(0.5);
+  doc.line(margin, y, margin + contentWidth, y);
+  y += 8;
+
+  doc.setTextColor(30, 41, 59);
+  doc.setFont("helvetica", "bold");
+  doc.setFontSize(11);
+  doc.text("Research Query", margin, y);
+  y += 6;
+
+  doc.setFillColor(241, 245, 249);
+  doc.roundedRect(margin, y - 3, contentWidth, 12, 2, 2, "F");
+  doc.setFont("helvetica", "normal");
+  doc.setFontSize(10);
+  doc.setTextColor(51, 65, 85);
+  doc.text(`"${queryText}"`, margin + 4, y + 4);
+  y += 16;
+
+  doc.setFont("helvetica", "bold");
+  doc.setFontSize(11);
+  doc.setTextColor(30, 41, 59);
+  doc.text("Source", margin, y);
+  doc.setFont("helvetica", "normal");
+  doc.setFontSize(9);
+  doc.setTextColor(100, 116, 139);
+  doc.text("CourtListener — Free Law Project", margin + 18, y);
+  y += 5;
+  doc.text(`${results.length} case${results.length !== 1 ? "s" : ""} extracted`, margin + 18, y);
+  y += 10;
+
+  doc.setDrawColor(226, 232, 240);
+  doc.setLineWidth(0.3);
+  doc.line(margin, y, margin + contentWidth, y);
+  y += 8;
+
+  doc.setFont("helvetica", "bold");
+  doc.setFontSize(13);
+  doc.setTextColor(15, 23, 42);
+  doc.text("Extracted Cases", margin, y);
+  y += 10;
+
+  results.forEach((result, index) => {
+    if (y > 250) {
+      doc.addPage();
+      y = margin;
+    }
+
+    doc.setFillColor(index % 2 === 0 ? 248 : 255, index % 2 === 0 ? 250 : 255, index % 2 === 0 ? 252 : 255);
+    doc.roundedRect(margin, y - 4, contentWidth, result.snippet ? 38 : 26, 2, 2, "F");
+
+    doc.setDrawColor(59, 130, 246);
+    doc.setLineWidth(0.8);
+    doc.line(margin, y - 4, margin, y + (result.snippet ? 34 : 22));
+
+    doc.setFont("helvetica", "bold");
+    doc.setFontSize(10);
+    doc.setTextColor(15, 23, 42);
+    const titleLines = doc.splitTextToSize(`${index + 1}. ${result.caseTitle}`, contentWidth - 8);
+    doc.text(titleLines[0], margin + 4, y + 2);
+    y += 7;
+
+    doc.setFont("helvetica", "normal");
+    doc.setFontSize(8);
+    doc.setTextColor(100, 116, 139);
+
+    const metaParts: string[] = [];
+    if (result.court) metaParts.push(result.court);
+    if (result.date) metaParts.push(result.date);
+    if (metaParts.length > 0) {
+      doc.text(metaParts.join("  |  "), margin + 4, y + 2);
+      y += 5;
+    }
+
+    if (result.url) {
+      doc.setTextColor(59, 130, 246);
+      doc.setFontSize(7);
+      const displayUrl = result.url.length > 80 ? result.url.slice(0, 77) + "..." : result.url;
+      doc.textWithLink(displayUrl, margin + 4, y + 2, { url: result.url });
+      y += 5;
+    }
+
+    if (result.snippet) {
+      doc.setTextColor(71, 85, 105);
+      doc.setFontSize(8);
+      const snippetLines = doc.splitTextToSize(result.snippet, contentWidth - 12);
+      doc.text(snippetLines.slice(0, 2), margin + 4, y + 2);
+      y += snippetLines.slice(0, 2).length * 4;
+    }
+
+    y += 10;
+  });
+
+  y += 5;
+  if (y > 260) {
+    doc.addPage();
+    y = margin;
+  }
+  doc.setDrawColor(226, 232, 240);
+  doc.setLineWidth(0.3);
+  doc.line(margin, y, margin + contentWidth, y);
+  y += 8;
+
+  doc.setFont("helvetica", "italic");
+  doc.setFontSize(7);
+  doc.setTextColor(148, 163, 184);
+  doc.text("This report was generated by Citadelle Web-Agent. Data sourced from CourtListener (Free Law Project).", margin, y);
+  y += 4;
+  doc.text("For informational purposes only. Not intended as legal advice.", margin, y);
+
+  doc.save("Citadelle_Report.pdf");
+}
+
+function generateDocxReport(results: ExtractedResult[], queryText: string) {
+  const doc = new Document({
+    styles: {
+      default: {
+        document: {
+          run: {
+            font: "Calibri",
+            size: 22,
+            color: "1E293B",
+          },
+        },
+      },
+    },
+    sections: [
+      {
+        properties: {
+          page: {
+            margin: {
+              top: 1200,
+              bottom: 1200,
+              left: 1200,
+              right: 1200,
+            },
+          },
+        },
+        children: [
+          new Paragraph({
+            children: [
+              new TextRun({
+                text: "CITADELLE",
+                bold: true,
+                size: 44,
+                color: "0F172A",
+                font: "Calibri",
+              }),
+            ],
+            spacing: { after: 80 },
+          }),
+          new Paragraph({
+            children: [
+              new TextRun({
+                text: "Legal Research Report",
+                size: 24,
+                color: "64748B",
+                font: "Calibri",
+              }),
+            ],
+            spacing: { after: 40 },
+          }),
+          new Paragraph({
+            children: [
+              new TextRun({
+                text: `Generated: ${new Date().toLocaleDateString("en-US", { year: "numeric", month: "long", day: "numeric" })}`,
+                size: 18,
+                color: "94A3B8",
+                font: "Calibri",
+              }),
+              new TextRun({
+                text: `    Report ID: CIT-${Date.now().toString(36).toUpperCase()}`,
+                size: 18,
+                color: "94A3B8",
+                font: "Calibri",
+              }),
+            ],
+            spacing: { after: 300 },
+          }),
+          new Paragraph({
+            children: [],
+            border: {
+              bottom: {
+                color: "3B82F6",
+                space: 1,
+                style: BorderStyle.SINGLE,
+                size: 6,
+              },
+            },
+            spacing: { after: 200 },
+          }),
+          new Paragraph({
+            children: [
+              new TextRun({
+                text: "Research Query",
+                bold: true,
+                size: 24,
+                color: "0F172A",
+              }),
+            ],
+            heading: HeadingLevel.HEADING_2,
+            spacing: { after: 120 },
+          }),
+          new Paragraph({
+            children: [
+              new TextRun({
+                text: `"${queryText}"`,
+                italics: true,
+                size: 22,
+                color: "334155",
+              }),
+            ],
+            spacing: { after: 80 },
+          }),
+          new Paragraph({
+            children: [
+              new TextRun({
+                text: "Source: ",
+                bold: true,
+                size: 20,
+                color: "64748B",
+              }),
+              new TextRun({
+                text: `CourtListener — Free Law Project  |  ${results.length} case${results.length !== 1 ? "s" : ""} extracted`,
+                size: 20,
+                color: "64748B",
+              }),
+            ],
+            spacing: { after: 300 },
+          }),
+          new Paragraph({
+            children: [],
+            border: {
+              bottom: {
+                color: "E2E8F0",
+                space: 1,
+                style: BorderStyle.SINGLE,
+                size: 4,
+              },
+            },
+            spacing: { after: 200 },
+          }),
+          new Paragraph({
+            children: [
+              new TextRun({
+                text: "Extracted Cases",
+                bold: true,
+                size: 28,
+                color: "0F172A",
+              }),
+            ],
+            heading: HeadingLevel.HEADING_1,
+            spacing: { after: 200 },
+          }),
+          ...results.flatMap((result, index) => {
+            const paragraphs: Paragraph[] = [];
+
+            paragraphs.push(
+              new Paragraph({
+                children: [
+                  new TextRun({
+                    text: `${index + 1}. ${result.caseTitle}`,
+                    bold: true,
+                    size: 22,
+                    color: "0F172A",
+                  }),
+                ],
+                spacing: { before: 200, after: 80 },
+                border: {
+                  left: {
+                    color: "3B82F6",
+                    space: 5,
+                    style: BorderStyle.SINGLE,
+                    size: 12,
+                  },
+                },
+              })
+            );
+
+            const metaParts: TextRun[] = [];
+            if (result.court) {
+              metaParts.push(
+                new TextRun({ text: result.court, size: 18, color: "64748B", bold: true })
+              );
+            }
+            if (result.date) {
+              metaParts.push(
+                new TextRun({ text: result.court ? "  |  " : "", size: 18, color: "94A3B8" }),
+                new TextRun({ text: result.date, size: 18, color: "64748B" })
+              );
+            }
+            if (metaParts.length > 0) {
+              paragraphs.push(
+                new Paragraph({
+                  children: metaParts,
+                  spacing: { after: 60 },
+                  indent: { left: 200 },
+                })
+              );
+            }
+
+            if (result.url) {
+              paragraphs.push(
+                new Paragraph({
+                  children: [
+                    new ExternalHyperlink({
+                      children: [
+                        new TextRun({
+                          text: result.url,
+                          size: 16,
+                          color: "3B82F6",
+                          underline: {},
+                          font: "Calibri",
+                        }),
+                      ],
+                      link: result.url,
+                    }),
+                  ],
+                  spacing: { after: 80 },
+                  indent: { left: 200 },
+                })
+              );
+            }
+
+            if (result.snippet) {
+              paragraphs.push(
+                new Paragraph({
+                  children: [
+                    new TextRun({
+                      text: result.snippet,
+                      size: 18,
+                      color: "475569",
+                      italics: true,
+                    }),
+                  ],
+                  spacing: { after: 160 },
+                  indent: { left: 200 },
+                })
+              );
+            }
+
+            return paragraphs;
+          }),
+          new Paragraph({
+            children: [],
+            border: {
+              bottom: {
+                color: "E2E8F0",
+                space: 1,
+                style: BorderStyle.SINGLE,
+                size: 4,
+              },
+            },
+            spacing: { before: 400, after: 200 },
+          }),
+          new Paragraph({
+            children: [
+              new TextRun({
+                text: "This report was generated by Citadelle Web-Agent. Data sourced from CourtListener (Free Law Project). For informational purposes only. Not intended as legal advice.",
+                size: 16,
+                color: "94A3B8",
+                italics: true,
+              }),
+            ],
+            alignment: AlignmentType.LEFT,
+          }),
+        ],
+      },
+    ],
+  });
+
+  Packer.toBlob(doc).then((blob) => {
+    saveAs(blob, "Citadelle_Report.docx");
+  });
+}
+
 export default function Home() {
   const [query, setQuery] = useState("");
   const [isWorkspaceActive, setIsWorkspaceActive] = useState(false);
@@ -195,6 +608,7 @@ export default function Home() {
   const [frameUrl, setFrameUrl] = useState<string | null>(null);
   const [completionMessage, setCompletionMessage] = useState("");
   const [isComplete, setIsComplete] = useState(false);
+  const [extractedResults, setExtractedResults] = useState<ExtractedResult[]>([]);
   const wsRef = useRef<WebSocket | null>(null);
 
   useEffect(() => {
@@ -231,6 +645,7 @@ export default function Home() {
     setIsComplete(false);
     setCompletionMessage("");
     setChecklist(INITIAL_CHECKLIST);
+    setExtractedResults([]);
 
     const protocol = window.location.protocol === "https:" ? "wss:" : "ws:";
     const ws = new WebSocket(`${protocol}//${window.location.host}/ws/agent`);
@@ -253,6 +668,11 @@ export default function Home() {
             break;
           case "COST_DEDUCT":
             setBalance((prev) => Math.max(0, parseFloat((prev - msg.amount).toFixed(2))));
+            break;
+          case "RESULTS":
+            if (msg.payload && Array.isArray(msg.payload)) {
+              setExtractedResults(msg.payload);
+            }
             break;
           case "COMPLETE":
             markAllDone();
@@ -282,6 +702,18 @@ export default function Home() {
     setIsWorkspaceActive(true);
     startAgent(query.trim());
   };
+
+  const handleExportPdf = useCallback(() => {
+    if (extractedResults.length > 0) {
+      generatePdfReport(extractedResults, submittedQuery);
+    }
+  }, [extractedResults, submittedQuery]);
+
+  const handleExportDocx = useCallback(() => {
+    if (extractedResults.length > 0) {
+      generateDocxReport(extractedResults, submittedQuery);
+    }
+  }, [extractedResults, submittedQuery]);
 
   return (
     <div className="h-screen bg-background flex flex-col">
@@ -416,7 +848,7 @@ export default function Home() {
                     <h3 className="text-xs font-semibold uppercase tracking-wider text-muted-foreground mb-3">
                       Export Options
                     </h3>
-                    {isComplete ? (
+                    {isComplete && extractedResults.length > 0 ? (
                       <>
                         <motion.div
                           initial={{ opacity: 0, y: 4 }}
@@ -427,10 +859,11 @@ export default function Home() {
                             variant="outline"
                             size="sm"
                             className="w-full justify-start gap-2 text-xs border-emerald-500/30 text-emerald-700 dark:text-emerald-400 shadow-[0_0_12px_rgba(16,185,129,0.12)]"
-                            data-testid="button-export-docs"
+                            onClick={handleExportPdf}
+                            data-testid="button-export-pdf"
                           >
                             <Sparkles className="w-3.5 h-3.5 text-emerald-500" />
-                            Export to Google Docs
+                            Export to PDF
                           </Button>
                         </motion.div>
                         <motion.div
@@ -442,10 +875,11 @@ export default function Home() {
                             variant="outline"
                             size="sm"
                             className="w-full justify-start gap-2 text-xs border-emerald-500/30 text-emerald-700 dark:text-emerald-400 shadow-[0_0_12px_rgba(16,185,129,0.12)]"
-                            data-testid="button-export-sheets"
+                            onClick={handleExportDocx}
+                            data-testid="button-export-docx"
                           >
                             <Sparkles className="w-3.5 h-3.5 text-emerald-500" />
-                            Export to Google Sheets
+                            Export to Word (.docx)
                           </Button>
                         </motion.div>
                       </>
@@ -456,20 +890,20 @@ export default function Home() {
                           size="sm"
                           disabled
                           className="w-full justify-start gap-2 text-xs"
-                          data-testid="button-export-docs"
+                          data-testid="button-export-pdf"
                         >
                           <FileText className="w-3.5 h-3.5" />
-                          Export to Google Docs
+                          Export to PDF
                         </Button>
                         <Button
                           variant="outline"
                           size="sm"
                           disabled
                           className="w-full justify-start gap-2 text-xs"
-                          data-testid="button-export-sheets"
+                          data-testid="button-export-docx"
                         >
-                          <Sheet className="w-3.5 h-3.5" />
-                          Export to Google Sheets
+                          <FileDown className="w-3.5 h-3.5" />
+                          Export to Word (.docx)
                         </Button>
                       </>
                     )}

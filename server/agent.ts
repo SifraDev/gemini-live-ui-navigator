@@ -337,7 +337,7 @@ async function startAgent(ws: WebSocket, userQuery: string) {
     await injectCursor(page);
 
     sendMessage(ws, { type: "COST_DEDUCT", amount: 0.10, reason: "Search results loaded" });
-    sendMessage(ws, { type: "STEP", step: 5, label: "Extracting Results" });
+    sendMessage(ws, { type: "STEP", step: 5, label: "Extracting Documents" });
 
     await delay(1500);
     if (isStale()) return;
@@ -346,6 +346,50 @@ async function startAgent(ws: WebSocket, userQuery: string) {
     await delay(800);
     await moveCursorTo(page, 600, 350);
     await delay(600);
+
+    let extractedResults: Array<{ caseTitle: string; court: string; date: string; url: string; snippet: string }> = [];
+    try {
+      extractedResults = await page.$$eval(
+        "article",
+        (elements) => {
+          return elements.slice(0, 5).map((el) => {
+            const linkEl = el.querySelector("a.visitable");
+            const fullText = linkEl?.textContent?.trim() || "Untitled Case";
+
+            const courtMatch = fullText.match(/\(([^)]+)\)\s*$/);
+            const court = courtMatch ? courtMatch[1].replace(/\u00a0/g, " ").trim() : "";
+            const caseTitle = courtMatch ? fullText.replace(courtMatch[0], "").trim() : fullText;
+
+            const href = linkEl?.getAttribute("href") || "";
+            const cleanHref = href.split("?")[0];
+            const url = cleanHref.startsWith("http") ? cleanHref : cleanHref ? `https://www.courtlistener.com${cleanHref}` : "";
+
+            const timeEl = el.querySelector("time.meta-data-value");
+            const date = timeEl?.getAttribute("datetime") || timeEl?.textContent?.trim() || "";
+
+            const citationEl = Array.from(el.querySelectorAll(".meta-data-header")).find(
+              (h) => h.textContent?.includes("Citations")
+            );
+            const snippet = citationEl
+              ? (citationEl.nextElementSibling as HTMLElement)?.textContent?.trim() || ""
+              : "";
+
+            return { caseTitle, court, date, url, snippet };
+          });
+        }
+      );
+      log(`Extracted ${extractedResults.length} results from CourtListener`, "agent");
+    } catch (err: any) {
+      if (isNavigationError(err)) {
+        log("Extraction skipped (page navigating)", "agent");
+      } else {
+        log(`Extraction error: ${err.message}`, "agent");
+      }
+    }
+
+    if (extractedResults.length > 0) {
+      sendMessage(ws, { type: "RESULTS", payload: extractedResults });
+    }
 
     await safeEval(page, () => window.scrollBy(0, 300));
     await delay(2000);
@@ -385,7 +429,7 @@ async function startAgent(ws: WebSocket, userQuery: string) {
       }
     } catch {}
 
-    const docCount = resultCount > 0 ? resultCount : 50;
+    const docCount = resultCount > 0 ? resultCount : extractedResults.length || 50;
 
     sendMessage(ws, {
       type: "COMPLETE",
