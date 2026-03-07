@@ -295,7 +295,7 @@ async function startAgent(ws: WebSocket, userQuery: string) {
         page.waitForNavigation({ waitUntil: "domcontentloaded", timeout: 45000 }).catch((e) => {
           log(`Nav warning: ${e.message}`, "agent");
         }),
-        page.keyboard.press("Enter"),
+        searchInput.press("Enter"),
       ]);
     } else {
       log("Search input not found, using direct URL", "agent");
