@@ -264,57 +264,39 @@ async function startAgent(ws: WebSocket, userQuery: string) {
 
     sendMessage(ws, { type: "STEP", step: 4, label: "Executing Search Query" });
 
-    let searchInput = await page.waitForSelector("#id_q", { timeout: 5000, state: "visible" }).catch(() => null);
-    if (!searchInput) {
-      searchInput = await page.waitForSelector("input[name='q']", { timeout: 3000, state: "visible" }).catch(() => null);
-    }
-    if (!searchInput) {
-      searchInput = await page.$("input[type='search'], input[type='text']").catch(() => null);
+    const searchInput = page.locator('input[type="search"], input[name="q"], input[id="search-query"], input[id="id_q"], input[type="text"]').first();
+
+    let inputFound = false;
+    try {
+      await searchInput.waitFor({ state: "visible", timeout: 15000 });
+      inputFound = true;
+    } catch {
+      log("Search input not visible via locator, falling back to direct URL", "agent");
     }
 
-    if (searchInput) {
+    if (inputFound) {
       const box = await searchInput.boundingBox();
       if (box) {
-        const targetX = box.x + box.width / 2;
-        const targetY = box.y + box.height / 2;
-
         await moveCursorTo(page, 100, 100);
         await delay(300);
-        await moveCursorTo(page, targetX, targetY);
+        await moveCursorTo(page, box.x + box.width / 2, box.y + box.height / 2);
         await delay(400);
-
-        await searchInput.click();
-        await page.waitForTimeout(500);
-
-        if (isStale()) return;
-
-        await page.keyboard.type(searchQuery, { delay: 150 });
-        await page.waitForTimeout(500);
-
-        await page.fill("input[name='q']", searchQuery).catch(() => {
-          log("fill() fallback failed, keyboard type should suffice", "agent");
-        });
-
-        await page.waitForTimeout(300);
-        if (isStale()) return;
-
-        const searchButton = await page.$("button[type='submit'], input[type='submit']").catch(() => null);
-
-        if (searchButton) {
-          const btnBox = await searchButton.boundingBox();
-          if (btnBox) {
-            await moveCursorTo(page, btnBox.x + btnBox.width / 2, btnBox.y + btnBox.height / 2);
-            await delay(400);
-          }
-        }
-
-        await Promise.all([
-          page.waitForNavigation({ waitUntil: "domcontentloaded", timeout: 30000 }).catch((e) => {
-            log(`Nav warning: ${e.message}`, "agent");
-          }),
-          page.keyboard.press("Enter"),
-        ]);
       }
+
+      await searchInput.click({ force: true });
+      await page.waitForTimeout(500);
+      if (isStale()) return;
+
+      await searchInput.fill(searchQuery);
+      await page.waitForTimeout(500);
+      if (isStale()) return;
+
+      await Promise.all([
+        page.waitForNavigation({ waitUntil: "domcontentloaded", timeout: 45000 }).catch((e) => {
+          log(`Nav warning: ${e.message}`, "agent");
+        }),
+        page.keyboard.press("Enter"),
+      ]);
     } else {
       log("Search input not found, using direct URL", "agent");
       await page.goto(`https://www.courtlistener.com/?q=${encodeURIComponent(searchQuery)}&type=o`, {
