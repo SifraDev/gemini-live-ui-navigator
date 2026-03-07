@@ -31,10 +31,10 @@ A B2B legal tech web application with a clean, minimalist Perplexity-style inter
 1. Initialize Engine - launch Chromium
 2. Parse Query Parameters - extract user query
 3. Navigate to CourtListener - go to courtlistener.com, inject cursor
-4. Execute Search Query - move cursor to input, click, type query, submit with waitForNavigation
-5. **Gemini Multimodal: Visually Analyzing Documents** - screenshot → Gemini vision → JSON extraction
-6. Analyze Documents - scroll through results with mouse simulation
-7. Compile Results - finalize and send completion with result count
+4. Execute Search Query - locator-based fill + press Enter on input
+5. **Gemini Multimodal: Visually Analyzing Documents** - screenshot → Gemini vision → JSON extraction of search results
+6. **Trace Precedent Chain (Depth 1-4)** - click first case, Gemini reads case page + identifies cited precedent, navigates to precedent, repeats up to MAX_DEPTH=4 with NO_PRECEDENT_FOUND stop condition
+7. Compile Results - finalize and send completion with full chain data
 
 ## Project Structure
 - `client/src/pages/home.tsx` - Main page with search, wallet, WebSocket client, workspace, PDF/DOCX export
@@ -47,9 +47,10 @@ A B2B legal tech web application with a clean, minimalist Perplexity-style inter
 ## WebSocket Protocol
 Messages from server to client:
 - `STEP` - { type, step, label } - Advances checklist to step N
+- `STEP_DYNAMIC` - { type, label } - Updates step 6 label dynamically (precedent chain depth progress)
 - `FRAME` - { type, image } - Base64 JPEG screenshot
 - `COST_DEDUCT` - { type, amount, reason } - Deduct from wallet
-- `RESULTS` - { type, payload } - Array of extracted case data (caseTitle, court, date, url, snippet)
+- `RESULTS` - { type, payload } - Array of extracted case data (caseTitle, court, date, url, snippet); sent incrementally as chain grows
 - `COMPLETE` - { type, message } - Agent finished
 - `ERROR` - { type, message } - Error occurred
 

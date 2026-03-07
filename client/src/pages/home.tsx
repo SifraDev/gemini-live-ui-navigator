@@ -26,7 +26,7 @@ const INITIAL_CHECKLIST: ChecklistItem[] = [
   { id: "3", label: "Navigating to CourtListener", status: "pending" },
   { id: "4", label: "Executing Search Query", status: "pending" },
   { id: "5", label: "Gemini Multimodal: Visually Analyzing Documents...", status: "pending" },
-  { id: "6", label: "Analyzing Documents", status: "pending" },
+  { id: "6", label: "Tracing Precedent Chain...", status: "pending" },
   { id: "7", label: "Compiling Results", status: "pending" },
 ];
 
@@ -671,8 +671,19 @@ export default function Home() {
             break;
           case "RESULTS":
             if (msg.payload && Array.isArray(msg.payload)) {
-              setExtractedResults(msg.payload);
+              setExtractedResults([...msg.payload]);
             }
+            break;
+          case "STEP_DYNAMIC":
+            setChecklist((prev) => {
+              const idx = prev.findIndex((item) => item.id === "6");
+              if (idx !== -1) {
+                const updated = [...prev];
+                updated[idx] = { ...updated[idx], label: msg.label, status: "active" };
+                return updated;
+              }
+              return prev;
+            });
             break;
           case "COMPLETE":
             markAllDone();
