@@ -33,6 +33,20 @@ const CURSOR_CSS = `
 
 const CURSOR_SVG = `<svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24"><path d="M5.5 3.21V20.8l4.86-4.86h6.22L5.5 3.21z" fill="#3b82f6" stroke="#1e3a5f" stroke-width="1.2" stroke-linejoin="round"/></svg>`;
 
+function isNavigationError(err: any): boolean {
+  if (!err) return false;
+  const msg = String(err.message || err);
+  return (
+    msg.includes("Execution context was destroyed") ||
+    msg.includes("Target closed") ||
+    msg.includes("Target page, context or browser has been closed") ||
+    msg.includes("frame was detached") ||
+    msg.includes("Frame was detached") ||
+    msg.includes("Navigation interrupted") ||
+    msg.includes("navigating")
+  );
+}
+
 export function setupWebSocketServer(httpServer: Server) {
   const wss = new WebSocketServer({ server: httpServer, path: "/ws/agent" });
 
@@ -74,28 +88,71 @@ function sendMessage(ws: WebSocket, data: Record<string, any>) {
   }
 }
 
+async function safeEval(page: Page, fn: (...args: any[]) => any, arg?: any): Promise<any> {
+  try {
+    if (arg !== undefined) {
+      return await page.evaluate(fn, arg);
+    }
+    return await page.evaluate(fn);
+  } catch (err: any) {
+    if (isNavigationError(err)) {
+      log("Context destroyed during evaluate (navigation in progress), skipping", "agent");
+      return undefined;
+    }
+    throw err;
+  }
+}
+
 async function injectCursor(page: Page) {
-  await page.addStyleTag({ content: CURSOR_CSS });
-  const b64svg = Buffer.from(CURSOR_SVG).toString("base64");
-  await page.evaluate((svg64: string) => {
-    const el = document.createElement("img");
-    el.id = "citadelle-cursor";
-    el.src = `data:image/svg+xml;base64,${svg64}`;
-    el.style.left = "-50px";
-    el.style.top = "-50px";
-    document.body.appendChild(el);
-  }, b64svg);
+  try {
+    await page.addStyleTag({ content: CURSOR_CSS });
+    const b64svg = Buffer.from(CURSOR_SVG).toString("base64");
+    await safeEval(page, (svg64: string) => {
+      const existing = document.getElementById("citadelle-cursor");
+      if (existing) existing.remove();
+      const el = document.createElement("img");
+      el.id = "citadelle-cursor";
+      el.src = `data:image/svg+xml;base64,${svg64}`;
+      el.style.left = "-50px";
+      el.style.top = "-50px";
+      document.body.appendChild(el);
+    }, b64svg);
+  } catch (err: any) {
+    if (isNavigationError(err)) {
+      log("Cursor injection skipped (page navigating)", "agent");
+    } else {
+      log(`Cursor injection error: ${err.message}`, "agent");
+    }
+  }
 }
 
 async function moveCursorTo(page: Page, x: number, y: number) {
-  await page.evaluate(({ cx, cy }: { cx: number; cy: number }) => {
-    const el = document.getElementById("citadelle-cursor");
-    if (el) {
-      el.style.left = `${cx}px`;
-      el.style.top = `${cy}px`;
+  try {
+    await safeEval(page, ({ cx, cy }: { cx: number; cy: number }) => {
+      const el = document.getElementById("citadelle-cursor");
+      if (el) {
+        el.style.left = `${cx}px`;
+        el.style.top = `${cy}px`;
+      }
+    }, { cx: x, cy: y });
+    await page.mouse.move(x, y, { steps: 5 });
+  } catch (err: any) {
+    if (isNavigationError(err)) {
+      log("Cursor move skipped (page navigating)", "agent");
     }
-  }, { cx: x, cy: y });
-  await page.mouse.move(x, y, { steps: 5 });
+  }
+}
+
+async function safeScreenshot(page: Page): Promise<Buffer | null> {
+  try {
+    return await page.screenshot({ type: "jpeg", quality: 55 });
+  } catch (err: any) {
+    if (isNavigationError(err)) {
+      log("Screenshot skipped (page navigating)", "agent");
+      return null;
+    }
+    throw err;
+  }
 }
 
 async function startAgent(ws: WebSocket, userQuery: string) {
@@ -152,11 +209,17 @@ async function startAgent(ws: WebSocket, userQuery: string) {
             session.capturing = false;
             continue;
           }
-          const buffer = await page.screenshot({ type: "jpeg", quality: 55 });
-          if (!isStale() && ws.readyState === WebSocket.OPEN) {
+          const buffer = await safeScreenshot(page);
+          if (buffer && !isStale() && ws.readyState === WebSocket.OPEN) {
             sendMessage(ws, { type: "FRAME", image: buffer.toString("base64") });
           }
-        } catch {
+        } catch (err: any) {
+          if (isNavigationError(err)) {
+            log("Screenshot loop: navigation in progress, continuing", "agent");
+            session.capturing = false;
+            await delay(500);
+            continue;
+          }
           session.capturing = false;
           break;
         }
@@ -181,7 +244,6 @@ async function startAgent(ws: WebSocket, userQuery: string) {
     }
 
     await injectCursor(page);
-
     capturePromise = captureLoop();
 
     await delay(800);
@@ -194,7 +256,7 @@ async function startAgent(ws: WebSocket, userQuery: string) {
       searchInput = await page.waitForSelector("input[name='q']", { timeout: 3000, state: "visible" }).catch(() => null);
     }
     if (!searchInput) {
-      searchInput = await page.$("input[type='search']:visible, input[type='text']:visible").catch(() => null);
+      searchInput = await page.$("input[type='search'], input[type='text']").catch(() => null);
     }
 
     if (searchInput) {
@@ -223,20 +285,34 @@ async function startAgent(ws: WebSocket, userQuery: string) {
         if (isStale()) return;
 
         const searchButton = await page.$("button[type='submit'], input[type='submit']").catch(() => null);
+
         if (searchButton) {
           const btnBox = await searchButton.boundingBox();
           if (btnBox) {
             await moveCursorTo(page, btnBox.x + btnBox.width / 2, btnBox.y + btnBox.height / 2);
             await delay(400);
-            await searchButton.click();
+
+            await Promise.all([
+              page.waitForNavigation({ waitUntil: "domcontentloaded", timeout: 20000 }).catch(() => {}),
+              searchButton.click(),
+            ]);
           } else {
-            await page.keyboard.press("Enter");
+            await Promise.all([
+              page.waitForNavigation({ waitUntil: "domcontentloaded", timeout: 20000 }).catch(() => {}),
+              page.keyboard.press("Enter"),
+            ]);
           }
         } else {
-          await page.keyboard.press("Enter");
+          await Promise.all([
+            page.waitForNavigation({ waitUntil: "domcontentloaded", timeout: 20000 }).catch(() => {}),
+            page.keyboard.press("Enter"),
+          ]);
         }
       } else {
-        await page.keyboard.press("Enter");
+        await Promise.all([
+          page.waitForNavigation({ waitUntil: "domcontentloaded", timeout: 20000 }).catch(() => {}),
+          page.keyboard.press("Enter"),
+        ]);
       }
     } else {
       log("Search input not found, using direct URL", "agent");
@@ -246,40 +322,55 @@ async function startAgent(ws: WebSocket, userQuery: string) {
       }).catch(() => {});
     }
 
+    await delay(1000);
+
     try {
-      await page.waitForLoadState("domcontentloaded", { timeout: 15000 });
+      await page.waitForLoadState("domcontentloaded", { timeout: 10000 });
     } catch {}
 
     if (isStale()) return;
 
+    await injectCursor(page);
+
     sendMessage(ws, { type: "COST_DEDUCT", amount: 0.10, reason: "Search results loaded" });
     sendMessage(ws, { type: "STEP", step: 5, label: "Extracting Results" });
 
-    await delay(3000);
+    await delay(1500);
     if (isStale()) return;
 
-    await page.evaluate(() => window.scrollBy(0, 300)).catch(() => {});
+    await moveCursorTo(page, 400, 300);
+    await delay(800);
+    await moveCursorTo(page, 600, 350);
+    await delay(600);
+
+    await safeEval(page, () => window.scrollBy(0, 300));
     await delay(2000);
     if (isStale()) return;
 
     sendMessage(ws, { type: "STEP", step: 6, label: "Analyzing Documents" });
 
-    await page.evaluate(() => window.scrollBy(0, 400)).catch(() => {});
+    await moveCursorTo(page, 500, 400);
+    await delay(700);
+    await moveCursorTo(page, 350, 500);
+    await delay(600);
+
+    await safeEval(page, () => window.scrollBy(0, 400));
     await delay(2500);
     if (isStale()) return;
 
     sendMessage(ws, { type: "STEP", step: 7, label: "Compiling Results" });
 
+    await moveCursorTo(page, 640, 300);
     await delay(2500);
     if (isStale()) return;
 
     session.stopped = true;
     if (capturePromise) await capturePromise;
 
-    try {
-      const finalBuffer = await page.screenshot({ type: "jpeg", quality: 55 });
+    const finalBuffer = await safeScreenshot(page);
+    if (finalBuffer) {
       sendMessage(ws, { type: "FRAME", image: finalBuffer.toString("base64") });
-    } catch {}
+    }
 
     let resultCount = 0;
     try {
@@ -298,7 +389,9 @@ async function startAgent(ws: WebSocket, userQuery: string) {
     });
   } catch (err: any) {
     log(`Agent error: ${err.message}`, "agent");
-    sendMessage(ws, { type: "ERROR", message: "Agent encountered an error" });
+    if (!isNavigationError(err)) {
+      sendMessage(ws, { type: "ERROR", message: "Agent encountered an error" });
+    }
   } finally {
     session.stopped = true;
     if (capturePromise) await capturePromise.catch(() => {});
