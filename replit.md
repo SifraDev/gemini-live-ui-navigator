@@ -15,7 +15,6 @@ A B2B legal tech web application with a clean, minimalist Perplexity-style inter
 
 ## Key Features
 - Central search bar with "Run Agent" functionality
-- Citadelle Wallet component with live balance deduction ($0.10 per page load)
 - Real Playwright browser navigates to CourtListener (courtlistener.com)
 - Visible blue cursor SVG injected into page, animated mouse movements
 - Human-like character-by-character typing with random delays
@@ -49,7 +48,7 @@ Messages from server to client:
 - `STEP` - { type, step, label } - Advances checklist to step N
 - `STEP_DYNAMIC` - { type, label } - Updates step 6 label dynamically (precedent chain depth progress)
 - `FRAME` - { type, image } - Base64 JPEG screenshot
-- `COST_DEDUCT` - { type, amount, reason } - Deduct from wallet
+
 - `RESULTS` - { type, payload } - Array of extracted case data (caseTitle, court, date, url, snippet); sent incrementally as chain grows
 - `COMPLETE` - { type, message } - Agent finished
 - `ERROR` - { type, message } - Error occurred

@@ -1,5 +1,5 @@
 import { useState, useCallback, useRef, useEffect, useMemo } from "react";
-import { Search, Play, Wallet, Plus, Check, Circle, FileText, FileDown, Monitor, CheckCircle2, Sparkles } from "lucide-react";
+import { Search, Play, Check, Circle, FileText, FileDown, Monitor, CheckCircle2, Sparkles } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { motion, AnimatePresence } from "framer-motion";
 import { jsPDF } from "jspdf";
@@ -30,26 +30,6 @@ const INITIAL_CHECKLIST: ChecklistItem[] = [
   { id: "7", label: "Compiling Results", status: "pending" },
 ];
 
-function CitadelleWallet({ balance }: { balance: number }) {
-  return (
-    <div className="flex items-center gap-2" data-testid="wallet-container">
-      <div className="flex items-center gap-2 rounded-full bg-white dark:bg-card border border-border px-4 py-2 shadow-sm">
-        <Wallet className="w-4 h-4 text-muted-foreground" />
-        <span className="text-sm font-semibold tracking-tight tabular-nums" data-testid="text-wallet-balance">
-          ${balance.toFixed(2)}
-        </span>
-      </div>
-      <Button
-        size="sm"
-        className="rounded-full bg-emerald-600 border-emerald-700 text-white font-medium px-4"
-        data-testid="button-topup"
-      >
-        <Plus className="w-3.5 h-3.5 mr-1" />
-        Top Up
-      </Button>
-    </div>
-  );
-}
 
 function AgentChecklist({ items, isComplete }: { items: ChecklistItem[]; isComplete: boolean }) {
   return (
@@ -604,7 +584,7 @@ export default function Home() {
   const [isWorkspaceActive, setIsWorkspaceActive] = useState(false);
   const [submittedQuery, setSubmittedQuery] = useState("");
   const [checklist, setChecklist] = useState<ChecklistItem[]>(INITIAL_CHECKLIST);
-  const [balance, setBalance] = useState(100.0);
+
   const [frameUrl, setFrameUrl] = useState<string | null>(null);
   const [completionMessage, setCompletionMessage] = useState("");
   const [isComplete, setIsComplete] = useState(false);
@@ -666,9 +646,7 @@ export default function Home() {
           case "FRAME":
             setFrameUrl(`data:image/jpeg;base64,${msg.image}`);
             break;
-          case "COST_DEDUCT":
-            setBalance((prev) => Math.max(0, parseFloat((prev - msg.amount).toFixed(2))));
-            break;
+
           case "RESULTS":
             if (msg.payload && Array.isArray(msg.payload)) {
               setExtractedResults([...msg.payload]);
@@ -737,7 +715,6 @@ export default function Home() {
             Citadelle
           </span>
         </div>
-        <CitadelleWallet balance={balance} />
       </header>
 
       <main className="flex-1 flex flex-col min-h-0">

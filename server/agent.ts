@@ -250,7 +250,6 @@ async function startAgent(ws: WebSocket, userQuery: string) {
       });
       if (isStale()) return;
 
-      sendMessage(ws, { type: "COST_DEDUCT", amount: 0.10, reason: "Page loaded: courtlistener.com" });
     } catch (err: any) {
       log(`Navigation error: ${err.message}`, "agent");
       if (isStale()) return;
@@ -315,7 +314,6 @@ async function startAgent(ws: WebSocket, userQuery: string) {
 
     await injectCursor(page);
 
-    sendMessage(ws, { type: "COST_DEDUCT", amount: 0.10, reason: "Search results loaded" });
     sendMessage(ws, { type: "STEP", step: 5, label: "Gemini Multimodal: Visually Analyzing Documents..." });
 
     await delay(1500);
@@ -449,7 +447,6 @@ async function startAgent(ws: WebSocket, userQuery: string) {
       if (isStale()) break;
 
       await injectCursor(page);
-      sendMessage(ws, { type: "COST_DEDUCT", amount: 0.10, reason: `Precedent page loaded (Depth ${chainDepth})` });
 
       await moveCursorTo(page, 400, 300);
       await delay(500);
@@ -569,7 +566,6 @@ Return ONLY a single JSON object (not an array) with these keys: title, court, d
             `https://www.courtlistener.com/?q=${encodeURIComponent(nextPrecedentTitle)}&type=o`,
             { waitUntil: "domcontentloaded", timeout: 25000 }
           );
-          sendMessage(ws, { type: "COST_DEDUCT", amount: 0.10, reason: `Precedent search: ${nextPrecedentTitle}` });
 
           await delay(1500);
 
