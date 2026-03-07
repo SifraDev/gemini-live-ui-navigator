@@ -1,0 +1,37 @@
+The current implementation of Phase 4 (Data Extraction) uses page.$$eval to scrape the DOM. This strictly violates the Google Gemini Hackathon rules for the "UI Navigator" category, which mandates: "Must use Gemini multimodal to interpret screenshots... with or without relying on APIs or DOM access."
+
+We must replace the traditional DOM scraping with a Pure Vision AI approach.
+
+Please update server/agent.ts to implement the following "Brain Transplant":
+
+1. INTEGRATE GEMINI SDK:
+
+Ensure @google/genai is installed.
+
+Initialize the Gemini client using process.env.GEMINI_API_KEY.
+
+2. VISION-BASED EXTRACTION (The Core Update):
+
+In the "Extracting Documents" phase, delete the page.$$eval DOM scraping logic completely.
+
+Instead, take a high-quality screenshot of the CourtListener results page:
+const screenshotBuffer = await page.screenshot({ type: 'jpeg', quality: 100 });
+
+Convert this buffer to base64.
+
+Send the base64 image to the gemini-1.5-pro (or gemini-2.5-pro if available in the SDK) multimodal model with the following system prompt:
+"You are a highly precise Legal UI Navigator AI. Look at this screenshot of a legal database search result. Extract the top 3 to 5 legal cases you see on the screen. Return ONLY a strict JSON array of objects with the following keys: 'title' (Case Title), 'court' (Court Name), 'date' (Filing Date), and 'citation' (A brief summary snippet). Do not return markdown, only the raw JSON array."
+
+3. PARSE AND EXPORT:
+
+Parse the JSON response from Gemini.
+
+Send this Gemini-generated JSON payload back to the frontend using the existing { type: 'RESULTS', payload: extractedDataArray } WebSocket event.
+
+Ensure the frontend PDF/Word export buttons continue to work seamlessly with this new AI-generated data.
+
+4. VISUAL PROOF OF AI THOUGHT:
+
+While Gemini is processing the image, update the Frontend Agent Progress checklist to say: "Gemini Multimodal: Visually Analyzing Documents..." so the judges know exactly what technology is running.
+
+Execute this update flawlessly. No mockups. Real multimodal vision processing.
