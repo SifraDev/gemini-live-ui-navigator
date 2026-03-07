@@ -450,19 +450,19 @@ async function startAgent(ws: WebSocket, userQuery: string) {
 
       await moveCursorTo(page, 400, 300);
       await delay(500);
-      await safeEval(page, () => window.scrollBy(0, 300));
-      await delay(800);
+      await safeEval(page, () => window.scrollBy(0, 800));
+      await delay(1000);
 
       let caseData: { caseTitle: string; court: string; date: string; url: string; snippet: string } | null = null;
       let nextPrecedentUrl: string | null = null;
       let nextPrecedentTitle: string | null = null;
 
-      try {
+      const analyzeCasePage = async (attemptLabel: string) => {
         const visionBuffer = await page.screenshot({ type: "jpeg", quality: 100 });
         const visionBase64 = visionBuffer.toString("base64");
         const currentUrl = page.url();
 
-        log(`Gemini analyzing case page (Depth ${chainDepth})...`, "agent");
+        log(`Gemini analyzing case page (Depth ${chainDepth}, ${attemptLabel})...`, "agent");
 
         const geminiResponse = await ai.models.generateContent({
           model: "gemini-2.5-flash",
@@ -486,9 +486,14 @@ Task 1: Extract the details of THIS case from the page. Return:
 - "citation": any citation string visible
 - "url": "${currentUrl}"
 
-Task 2: Identify the MOST PROMINENT cited precedent (a prior case referenced in this opinion). Look for case names in the opinion text, "Authorities" or "Cases Cited" sections, or hyperlinked case references. Return:
-- "precedent_title": the name of the cited case (or null if none found)
-- "precedent_url": if there is a clickable link to another CourtListener opinion page, provide the full URL (or null if no link)
+Task 2: Aggressively identify ANY cited precedent — a prior case referenced in this opinion. Search the ENTIRE visible text for:
+- Standard legal citations (e.g., "Smith v. Jones", "123 F.3d 456")
+- "Cited Authorities", "Cases Cited", or "References" sections
+- Hyperlinked case names pointing to other CourtListener opinion pages
+- Inline case mentions in the opinion body text using "v." format
+Pick the MOST PROMINENT or first clearly identifiable prior case. Return:
+- "precedent_title": the full case name (e.g., "Smith v. Jones") — return null ONLY if absolutely zero prior cases are mentioned anywhere on the visible page
+- "precedent_url": if there is a clickable link to another CourtListener opinion page, provide the full URL (or null if no direct link)
 
 Return ONLY a single JSON object (not an array) with these keys: title, court, date, citation, url, precedent_title, precedent_url. No markdown, no code fences, just raw JSON.`,
                 },
@@ -501,7 +506,7 @@ Return ONLY a single JSON object (not an array) with these keys: title, court, d
         });
 
         const responseText = geminiResponse.text?.trim() || "";
-        log(`Gemini precedent response (${responseText.length} chars, Depth ${chainDepth})`, "agent");
+        log(`Gemini precedent response (${responseText.length} chars, Depth ${chainDepth}, ${attemptLabel})`, "agent");
 
         let jsonText = responseText;
         const fenceMatch = responseText.match(/```(?:json)?\s*([\s\S]*?)```/);
@@ -516,18 +521,38 @@ Return ONLY a single JSON object (not an array) with these keys: title, court, d
 
         const parsed = JSON.parse(jsonText);
 
-        caseData = {
-          caseTitle: parsed.title || "Untitled Case",
-          court: parsed.court || "",
-          date: parsed.date || "",
-          url: parsed.url || currentUrl,
-          snippet: parsed.citation || "",
+        if (!caseData) {
+          caseData = {
+            caseTitle: parsed.title || "Untitled Case",
+            court: parsed.court || "",
+            date: parsed.date || "",
+            url: parsed.url || currentUrl,
+            snippet: parsed.citation || "",
+          };
+        }
+
+        return {
+          precedentTitle: parsed.precedent_title || null,
+          precedentUrl: parsed.precedent_url || null,
         };
+      };
 
-        nextPrecedentTitle = parsed.precedent_title || null;
-        nextPrecedentUrl = parsed.precedent_url || null;
+      try {
+        const firstAttempt = await analyzeCasePage("scroll-1");
+        nextPrecedentTitle = firstAttempt.precedentTitle;
+        nextPrecedentUrl = firstAttempt.precedentUrl;
 
-        log(`Depth ${chainDepth}: "${caseData.caseTitle}" → precedent: "${nextPrecedentTitle || "NONE"}"`, "agent");
+        if (!nextPrecedentTitle && !nextPrecedentUrl) {
+          log(`No precedent on first scroll at Depth ${chainDepth}, scrolling deeper and retrying...`, "agent");
+          await safeEval(page, () => window.scrollBy(0, 1000));
+          await delay(1000);
+
+          const secondAttempt = await analyzeCasePage("scroll-2");
+          nextPrecedentTitle = secondAttempt.precedentTitle;
+          nextPrecedentUrl = secondAttempt.precedentUrl;
+        }
+
+        log(`Depth ${chainDepth}: "${caseData?.caseTitle}" → precedent: "${nextPrecedentTitle || "NONE"}"`, "agent");
       } catch (err: any) {
         log(`Gemini precedent analysis error (Depth ${chainDepth}): ${err.message}`, "agent");
       }
@@ -538,7 +563,7 @@ Return ONLY a single JSON object (not an array) with these keys: title, court, d
       }
 
       if (!nextPrecedentTitle && !nextPrecedentUrl) {
-        log(`No precedent found at Depth ${chainDepth}, ending chain`, "agent");
+        log(`No precedent found at Depth ${chainDepth} after retry, ending chain`, "agent");
         break;
       }
 
