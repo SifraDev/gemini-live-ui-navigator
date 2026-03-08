@@ -586,10 +586,6 @@ Return:
 
     sendMessage(ws, { type: "STEP", step: 7, label: "Compiling Results" });
 
-    await moveCursorTo(page, 640, 300);
-    await delay(2000);
-    if (isStale()) return;
-
     session.stopped = true;
     if (capturePromise) await capturePromise;
 
