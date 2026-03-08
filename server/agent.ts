@@ -234,95 +234,13 @@ async function simulateReading(page: Page, durationMs: number, stopSignal: { sto
   }
 }
 
-async function injectAnchorGrid(page: Page) {
+async function geminiLocateElement(page: Page, description: string): Promise<{ x: number; y: number } | null> {
   try {
-    await safeEval(page, () => {
-      const existing = document.getElementById("citadelle-grid");
-      if (existing) existing.remove();
-
-      const overlay = document.createElement("div");
-      overlay.id = "citadelle-grid";
-      overlay.style.cssText = "position:fixed;top:0;left:0;width:100%;height:100%;pointer-events:none;z-index:2147483640;";
-
-      const cols = 8;
-      const rows = 5;
-      const cellW = 1280 / cols;
-      const cellH = 800 / rows;
-
-      for (let r = 0; r < rows; r++) {
-        for (let c = 0; c < cols; c++) {
-          const marker = document.createElement("div");
-          const cx = Math.round(c * cellW + cellW / 2);
-          const cy = Math.round(r * cellH + cellH / 2);
-          marker.textContent = `[${cx},${cy}]`;
-          marker.style.cssText = `position:absolute;left:${cx - 20}px;top:${cy - 8}px;font-size:9px;color:rgba(255,0,0,0.35);font-family:monospace;pointer-events:none;`;
-          overlay.appendChild(marker);
-        }
-      }
-      document.body.appendChild(overlay);
-    });
-  } catch {}
-}
-
-async function removeAnchorGrid(page: Page) {
-  try {
-    await safeEval(page, () => {
-      const el = document.getElementById("citadelle-grid");
-      if (el) el.remove();
-    });
-  } catch {}
-}
-
-function extractCoords(raw: string): { x: number; y: number } | null {
-  let text = raw.trim();
-  text = text.replace(/^```(?:json)?\s*/i, '').replace(/\s*```$/i, '');
-
-  const startBrace = text.indexOf('{');
-  const endBrace = text.lastIndexOf('}');
-  if (startBrace !== -1 && endBrace !== -1) {
-    try {
-      const parsed = JSON.parse(text.substring(startBrace, endBrace + 1));
-      if (typeof parsed.x === "number" && typeof parsed.y === "number") {
-        return clampCoords(parsed.x, parsed.y);
-      }
-    } catch {}
-  }
-
-  const regex = /["']?x["']?\s*[:=]\s*(\d+(?:\.\d+)?)\s*[,}\s]\s*["']?y["']?\s*[:=]\s*(\d+(?:\.\d+)?)/i;
-  const match = text.match(regex);
-  if (match) {
-    return clampCoords(parseFloat(match[1]), parseFloat(match[2]));
-  }
-
-  const numRegex = /(\d{2,4})\s*[,\s]\s*(\d{2,4})/;
-  const numMatch = text.match(numRegex);
-  if (numMatch) {
-    const x = parseFloat(numMatch[1]);
-    const y = parseFloat(numMatch[2]);
-    if (x <= 1280 && y <= 800) {
-      return clampCoords(x, y);
-    }
-  }
-
-  return null;
-}
-
-function clampCoords(x: number, y: number): { x: number; y: number } {
-  return {
-    x: Math.max(10, Math.min(1270, Math.round(x))),
-    y: Math.max(10, Math.min(790, Math.round(y))),
-  };
-}
-
-async function geminiLocateElement(page: Page, description: string, retryCount = 0): Promise<{ x: number; y: number } | null> {
-  try {
-    await injectAnchorGrid(page);
-    const buffer = await page.screenshot({ type: "jpeg", quality: 90 });
-    await removeAnchorGrid(page);
+    const buffer = await page.screenshot({ type: "jpeg", quality: 85 });
     const base64 = buffer.toString("base64");
 
     const response = await ai.models.generateContent({
-      model: "gemini-2.5-flash",
+      model: "gemini-3.1-pro-preview",
       contents: [
         {
           role: "user",
@@ -331,7 +249,7 @@ async function geminiLocateElement(page: Page, description: string, retryCount =
               inlineData: { mimeType: "image/jpeg", data: base64 },
             },
             {
-              text: `You see a 1280x800 screenshot with faint red coordinate markers [x,y] for reference. Find the element: "${description}". Return ONLY raw JSON: {"x": NUMBER, "y": NUMBER} with the pixel coordinates of its center. No explanation, no markdown.`,
+              text: `Look at this screenshot (1280x800 viewport). Find the element described as: "${description}". Return ONLY a JSON object with "x" and "y" keys representing the pixel coordinates of the CENTER of that element. No markdown, no code fences, just raw JSON like {"x": 640, "y": 300}.`,
             },
           ],
         },
@@ -340,26 +258,20 @@ async function geminiLocateElement(page: Page, description: string, retryCount =
     });
 
     const text = response.text?.trim() || "";
-    const coords = extractCoords(text);
-
-    if (coords) {
+    let jsonText = text.replace(/^```(?:json)?\s*/i, '').replace(/\s*```$/i, '');
+    const startBrace = jsonText.indexOf('{');
+    const endBrace = jsonText.lastIndexOf('}');
+    if (startBrace !== -1 && endBrace !== -1) {
+      jsonText = jsonText.substring(startBrace, endBrace + 1);
+    }
+    const coords = JSON.parse(jsonText);
+    if (typeof coords.x === "number" && typeof coords.y === "number") {
       log(`Gemini located "${description}" at (${coords.x}, ${coords.y})`, "agent");
-      return coords;
+      return { x: coords.x, y: coords.y };
     }
-
-    log(`Gemini returned unparseable coords for "${description}": ${text.substring(0, 100)}`, "agent");
-
-    if (retryCount < 1) {
-      log(`Retrying geminiLocateElement for "${description}"...`, "agent");
-      return geminiLocateElement(page, description, retryCount + 1);
-    }
-
     return null;
   } catch (err: any) {
     log(`Gemini locate failed for "${description}": ${err.message}`, "agent");
-    if (retryCount < 1) {
-      return geminiLocateElement(page, description, retryCount + 1);
-    }
     return null;
   }
 }
@@ -785,46 +697,11 @@ async function startAgent(ws: WebSocket, userQuery: string) {
       }
 
       if (!navigated) {
-        log(`First visual scan failed for ${label}, scrolling and retrying...`, "agent");
-        await safeEval(page, () => window.scrollTo(0, 0));
-        await delay(800);
-        await injectCursor(page);
-
-        const retryCoords = await geminiLocateElement(page, `a clickable link for the case "${targetTitle}" — look for blue/underlined text with that case name`);
-        if (retryCoords) {
-          await moveCursorTo(page, 200, 150);
-          await delay(300);
-          await moveCursorTo(page, retryCoords.x, retryCoords.y);
-          await delay(500);
-          await injectRedDot(page, retryCoords.x, retryCoords.y);
-          await delay(300);
-          await Promise.all([
-            page.waitForNavigation({ waitUntil: "domcontentloaded", timeout: 25000 }).catch(() => {}),
-            page.mouse.click(retryCoords.x, retryCoords.y),
-          ]);
-          navigated = true;
-        }
-      }
-
-      if (!navigated) {
-        log(`Visual navigation exhausted for ${label}, clicking first visible result link`, "agent");
-        const anyLink = page.locator("article a.visitable, a[href*='/opinion/']").first();
-        try {
-          await anyLink.waitFor({ state: "visible", timeout: 5000 });
-          const anyBox = await anyLink.boundingBox();
-          if (anyBox) {
-            await moveCursorTo(page, anyBox.x + anyBox.width / 2, anyBox.y + anyBox.height / 2);
-            await delay(400);
-            await injectRedDot(page, anyBox.x + anyBox.width / 2, anyBox.y + anyBox.height / 2);
-            await delay(200);
-            await Promise.all([
-              page.waitForNavigation({ waitUntil: "domcontentloaded", timeout: 25000 }).catch(() => {}),
-              page.mouse.click(anyBox.x + anyBox.width / 2, anyBox.y + anyBox.height / 2),
-            ]);
-          }
-        } catch {
-          log(`No clickable links found for ${label}`, "agent");
-        }
+        log(`All click methods failed for ${label}, using page.goto as last resort`, "agent");
+        const fallbackUrl = targetUrl && targetUrl.startsWith("http")
+          ? targetUrl
+          : `https://www.courtlistener.com/?q=${encodeURIComponent(targetTitle)}&type=o`;
+        await page.goto(fallbackUrl, { waitUntil: "domcontentloaded", timeout: 25000 }).catch(() => {});
       }
 
       await delay(1500);
