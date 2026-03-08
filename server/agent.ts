@@ -404,8 +404,13 @@ async function startAgent(ws: WebSocket, userQuery: string) {
     };
 
     const sorted = [...extractedResults].sort((a, b) => parseDate(b.date) - parseDate(a.date));
-    const newestCase = sorted[0] || extractedResults[0];
-    const oldestCase = sorted[sorted.length - 1] || extractedResults[extractedResults.length - 1];
+    const newestCase = sorted[0] || extractedResults[0] || null;
+    const oldestCase = sorted.length > 1
+      ? (sorted[sorted.length - 1] || extractedResults[extractedResults.length - 1])
+      : null;
+
+    log(`Strategic analysis targets: newest="${newestCase?.caseTitle}" (url=${newestCase?.url || "MISSING"}), oldest="${oldestCase?.caseTitle}" (url=${oldestCase?.url || "MISSING"})`, "agent");
+    log(`extractedResults has ${extractedResults.length} entries`, "agent");
 
     const analyzeCase = async (caseUrl: string, promptTask: string, label: string): Promise<{
       summary: string;
@@ -512,7 +517,7 @@ Return:
     let precedentUrl: string | null = null;
     let analysisCount = 0;
 
-    if (newestCase?.url) {
+    if (newestCase && newestCase.url && newestCase.url.startsWith("http")) {
       sendMessage(ws, { type: "STEP_DYNAMIC", label: "Analyzing Newest Case..." });
       try {
         const result = await analyzeCase(newestCase.url, newestPrompt, "Newest Case");
@@ -554,7 +559,7 @@ Return:
       if (isStale()) return;
     }
 
-    if (oldestCase?.url && oldestCase.url !== newestCase?.url) {
+    if (oldestCase && oldestCase.url && oldestCase.url.startsWith("http") && oldestCase.url !== newestCase?.url) {
       sendMessage(ws, { type: "STEP_DYNAMIC", label: "Analyzing Original/Oldest Case..." });
       try {
         const result = await analyzeCase(oldestCase.url, oldestPrompt, "Oldest Case");
@@ -586,7 +591,7 @@ Return:
 
     sendMessage(ws, {
       type: "COMPLETE",
-      message: `Task Completed. Traced ${chainDepth}-deep precedent chain with ${extractedResults.length} legal documents for "${searchQuery}".`,
+      message: `Task Completed. Strategically analyzed ${extractedResults.length} cases using the Newest/Oldest method for "${searchQuery}".`,
     });
   } catch (err: any) {
     log(`Agent error: ${err.message}`, "agent");
