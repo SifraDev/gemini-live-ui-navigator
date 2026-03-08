@@ -143,7 +143,8 @@ async function moveCursorTo(page: Page, x: number, y: number) {
         el.style.top = `${cy}px`;
       }
     }, { cx: x, cy: y });
-    await page.mouse.move(x, y, { steps: 10 });
+    await page.mouse.move(x, y, { steps: 40 });
+    await delay(500);
   } catch (err: any) {
     if (isNavigationError(err)) {
       log("Cursor move skipped (page navigating)", "agent");
@@ -320,14 +321,10 @@ async function startAgent(ws: WebSocket, userQuery: string) {
             sendMessage(ws, { type: "FRAME", image: buffer.toString("base64") });
           }
         } catch (err: any) {
-          if (isNavigationError(err)) {
-            log("Screenshot loop: navigation in progress, continuing", "agent");
-            session.capturing = false;
-            await delay(500);
-            continue;
-          }
+          log(`Screenshot loop error (non-fatal): ${err.message?.substring(0, 80)}`, "agent");
           session.capturing = false;
-          break;
+          await delay(500);
+          continue;
         }
         session.capturing = false;
         await delay(300);
@@ -382,7 +379,10 @@ async function startAgent(ws: WebSocket, userQuery: string) {
       await page.waitForTimeout(500);
       if (isStale()) return;
 
-      await searchInput.fill(searchQuery);
+      for (const char of searchQuery) {
+        await searchInput.type(char, { delay: 0 });
+        await delay(60 + Math.random() * 80);
+      }
       await page.waitForTimeout(500);
       if (isStale()) return;
 
