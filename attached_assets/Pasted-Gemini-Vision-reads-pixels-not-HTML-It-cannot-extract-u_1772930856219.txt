@@ -1,0 +1,44 @@
+Gemini Vision reads pixels, not HTML. It cannot extract underlying href links from a screenshot, so newestCase.url is returning empty ("MISSING"). Because of the strict if (newestCase && newestCase.url.startsWith("http")) condition, the agent skips the analysis entirely.
++1
+
+Please fix server/agent.ts by updating the analyzeCase function to intelligently fallback to a search if the direct URL is missing:
+
+1. Refactor analyzeCase signature and navigation:
+
+TypeScript
+const analyzeCase = async (targetTitle: string, targetUrl: string | null, promptTask: string, label: string) => {
+  log(`Navigating to ${label}: ${targetTitle}`, "agent");
+  
+  if (targetUrl && targetUrl.startsWith("http")) {
+    await page.goto(targetUrl, { waitUntil: "domcontentloaded", timeout: 25000 }).catch(()=>{});
+  } else {
+    // Fallback: Search CourtListener for the title and click the first opinion result
+    await page.goto(`https://www.courtlistener.com/?q=${encodeURIComponent(targetTitle)}&type=o`, { waitUntil: "domcontentloaded", timeout: 25000 }).catch(()=>{});
+    await delay(1500);
+    const link = page.locator("article a.visitable, .search-results a[href*='/opinion/'], h3 a").first();
+    try {
+      await link.waitFor({ state: "visible", timeout: 8000 });
+      await Promise.all([
+        page.waitForNavigation({ waitUntil: "domcontentloaded", timeout: 25000 }).catch(() => {}),
+        link.click({ force: true })
+      ]);
+    } catch (e) {
+      log(`Search navigation failed for ${label}`, "agent");
+    }
+  }
+  
+  await delay(1500);
+  await injectCursor(page);
+  await safeEval(page, () => window.scrollBy(0, 800));
+  await delay(1000);
+  // ... (Keep the rest of the screenshot and Gemini logic exactly the same)
+2. Update the Execution Blocks:
+
+Remove the url.startsWith("http") requirement from the if (newestCase) and if (oldestCase) checks.
+
+Pass both the title and url to analyzeCase:
+await analyzeCase(newestCase.caseTitle, newestCase.url, newestPrompt, "Newest Case");
+
+For the precedent, pass precedentTitle and precedentUrl.
+
+This guarantees the agent reaches the opinion page using the case Title, even if the Vision model couldn't extract the direct URL.

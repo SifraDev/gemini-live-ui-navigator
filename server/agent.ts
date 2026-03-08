@@ -412,15 +412,34 @@ async function startAgent(ws: WebSocket, userQuery: string) {
     log(`Strategic analysis targets: newest="${newestCase?.caseTitle}" (url=${newestCase?.url || "MISSING"}), oldest="${oldestCase?.caseTitle}" (url=${oldestCase?.url || "MISSING"})`, "agent");
     log(`extractedResults has ${extractedResults.length} entries`, "agent");
 
-    const analyzeCase = async (caseUrl: string, promptTask: string, label: string): Promise<{
+    const analyzeCase = async (targetTitle: string, targetUrl: string | null, promptTask: string, label: string): Promise<{
       summary: string;
       precedentTitle: string | null;
       precedentUrl: string | null;
     }> => {
-      log(`Navigating to ${label}: ${caseUrl}`, "agent");
-      await page.goto(caseUrl, { waitUntil: "domcontentloaded", timeout: 25000 }).catch((e) => {
-        log(`Nav warning (${label}): ${e.message}`, "agent");
-      });
+      log(`Navigating to ${label}: "${targetTitle}" (url=${targetUrl || "MISSING"})`, "agent");
+
+      if (targetUrl && targetUrl.startsWith("http")) {
+        await page.goto(targetUrl, { waitUntil: "domcontentloaded", timeout: 25000 }).catch((e) => {
+          log(`Nav warning (${label}): ${e.message}`, "agent");
+        });
+      } else {
+        await page.goto(`https://www.courtlistener.com/?q=${encodeURIComponent(targetTitle)}&type=o`, {
+          waitUntil: "domcontentloaded",
+          timeout: 25000,
+        }).catch(() => {});
+        await delay(1500);
+        const link = page.locator("article a.visitable, .search-results a[href*='/opinion/'], h3 a").first();
+        try {
+          await link.waitFor({ state: "visible", timeout: 8000 });
+          await Promise.all([
+            page.waitForNavigation({ waitUntil: "domcontentloaded", timeout: 25000 }).catch(() => {}),
+            link.click({ force: true }),
+          ]);
+        } catch {
+          log(`Search navigation failed for ${label}, analyzing search results page instead`, "agent");
+        }
+      }
 
       await delay(1500);
       await injectCursor(page);
@@ -515,22 +534,18 @@ Return:
 - "precedent_url": null`;
 
     let precedentUrl: string | null = null;
+    let precedentTitle: string | null = null;
     let analysisCount = 0;
 
-    if (newestCase && newestCase.url && newestCase.url.startsWith("http")) {
+    if (newestCase) {
       sendMessage(ws, { type: "STEP_DYNAMIC", label: "Analyzing Newest Case..." });
       try {
-        const result = await analyzeCase(newestCase.url, newestPrompt, "Newest Case");
+        const result = await analyzeCase(newestCase.caseTitle, newestCase.url || null, newestPrompt, "Newest Case");
         analysisCount++;
         newestCase.snippet = result.summary || newestCase.snippet;
         precedentUrl = result.precedentUrl;
-        const precedentTitle = result.precedentTitle;
+        precedentTitle = result.precedentTitle;
         log(`Newest case analyzed. Precedent found: "${precedentTitle || "NONE"}" (URL: ${precedentUrl || "NONE"})`, "agent");
-
-        if (!precedentUrl && precedentTitle) {
-          precedentUrl = `https://www.courtlistener.com/?q=${encodeURIComponent(precedentTitle)}&type=o`;
-          log(`No direct precedent URL, will search: ${precedentUrl}`, "agent");
-        }
 
         sendMessage(ws, { type: "RESULTS", payload: extractedResults });
       } catch (err: any) {
@@ -539,16 +554,16 @@ Return:
       if (isStale()) return;
     }
 
-    if (precedentUrl) {
+    if (precedentTitle || precedentUrl) {
       sendMessage(ws, { type: "STEP_DYNAMIC", label: "Analyzing Cited Precedent..." });
       try {
-        const result = await analyzeCase(precedentUrl, precedentPrompt, "Cited Precedent");
+        const result = await analyzeCase(precedentTitle || "cited precedent", precedentUrl || null, precedentPrompt, "Cited Precedent");
         analysisCount++;
         extractedResults.push({
           caseTitle: `[Precedent] ${result.summary ? result.summary.split(".")[0] : "Cited Case"}`,
           court: "",
           date: "",
-          url: precedentUrl,
+          url: page.url(),
           snippet: result.summary || "",
         });
         sendMessage(ws, { type: "RESULTS", payload: extractedResults });
@@ -559,10 +574,10 @@ Return:
       if (isStale()) return;
     }
 
-    if (oldestCase && oldestCase.url && oldestCase.url.startsWith("http") && oldestCase.url !== newestCase?.url) {
+    if (oldestCase && oldestCase.caseTitle !== newestCase?.caseTitle) {
       sendMessage(ws, { type: "STEP_DYNAMIC", label: "Analyzing Original/Oldest Case..." });
       try {
-        const result = await analyzeCase(oldestCase.url, oldestPrompt, "Oldest Case");
+        const result = await analyzeCase(oldestCase.caseTitle, oldestCase.url || null, oldestPrompt, "Oldest Case");
         analysisCount++;
         oldestCase.snippet = result.summary || oldestCase.snippet;
         sendMessage(ws, { type: "RESULTS", payload: extractedResults });
