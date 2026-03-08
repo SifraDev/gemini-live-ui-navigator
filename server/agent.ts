@@ -450,8 +450,19 @@ async function startAgent(ws: WebSocket, userQuery: string) {
 
       await moveCursorTo(page, 400, 300);
       await delay(500);
-      await safeEval(page, () => window.scrollBy(0, 800));
-      await delay(1000);
+
+      const citationLink = page.locator("article a[href*='/opinion/'], .opinion-content a[href*='/opinion/'], a.citation").first();
+      try {
+        await citationLink.waitFor({ state: "attached", timeout: 5000 });
+        await citationLink.scrollIntoViewIfNeeded();
+        await safeEval(page, () => window.scrollBy(0, -150));
+        await delay(1200);
+        log("Smart scroll to first citation successful", "agent");
+      } catch {
+        log("Could not find a citation link to snap to, falling back to deep scroll", "agent");
+        await safeEval(page, () => window.scrollBy(0, 2500));
+        await delay(1000);
+      }
 
       let caseData: { caseTitle: string; court: string; date: string; url: string; snippet: string } | null = null;
       let nextPrecedentUrl: string | null = null;
