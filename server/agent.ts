@@ -451,7 +451,7 @@ async function startAgent(ws: WebSocket, userQuery: string) {
       await moveCursorTo(page, 400, 300);
       await delay(500);
 
-      const citationLink = page.locator("article a[href*='/opinion/'], .opinion-content a[href*='/opinion/'], a.citation").first();
+      const citationLink = page.locator("a.citation, span.citation, a[href*='/c/'], a[href*='/opinion/'], p:has-text(' v. ')").locator("visible=true").first();
       try {
         await citationLink.waitFor({ state: "attached", timeout: 5000 });
         await citationLink.scrollIntoViewIfNeeded();
@@ -460,7 +460,7 @@ async function startAgent(ws: WebSocket, userQuery: string) {
         log("Smart scroll to first citation successful", "agent");
       } catch {
         log("Could not find a citation link to snap to, falling back to deep scroll", "agent");
-        await safeEval(page, () => window.scrollBy(0, 2500));
+        await safeEval(page, () => window.scrollBy(0, 8000));
         await delay(1000);
       }
 
