@@ -6,6 +6,9 @@ import { log } from "./index";
 
 const ai = new GoogleGenAI({
   apiKey: process.env.GOOGLE_GEMINI_API_KEY,
+  httpOptions: {
+    apiVersion: "v1alpha",
+  },
 });
 
 interface AgentSession {
@@ -330,7 +333,7 @@ async function startAgent(ws: WebSocket, userQuery: string) {
       const currentUrl = page.url();
 
       const geminiResponse = await ai.models.generateContent({
-        model: "gemini-3.1-pro",
+        model: "gemini-3.1-pro-preview",
         contents: [
           {
             role: "user",
@@ -446,7 +449,7 @@ async function startAgent(ws: WebSocket, userQuery: string) {
       log(`Gemini analyzing ${label}...`, "agent");
 
       const geminiResponse = await ai.models.generateContent({
-        model: "gemini-3.1-pro",
+        model: "gemini-3.1-pro-preview",
         contents: [
           {
             role: "user",
