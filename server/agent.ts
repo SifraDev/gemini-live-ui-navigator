@@ -143,11 +143,105 @@ async function moveCursorTo(page: Page, x: number, y: number) {
         el.style.top = `${cy}px`;
       }
     }, { cx: x, cy: y });
-    await page.mouse.move(x, y, { steps: 5 });
+    await page.mouse.move(x, y, { steps: 10 });
   } catch (err: any) {
     if (isNavigationError(err)) {
       log("Cursor move skipped (page navigating)", "agent");
     }
+  }
+}
+
+async function injectRedDot(page: Page, x: number, y: number) {
+  try {
+    await safeEval(page, ({ dx, dy }: { dx: number; dy: number }) => {
+      const existing = document.getElementById("citadelle-reddot");
+      if (existing) existing.remove();
+
+      const dot = document.createElement("div");
+      dot.id = "citadelle-reddot";
+      dot.style.cssText = `
+        position: fixed;
+        left: ${dx - 12}px;
+        top: ${dy - 12}px;
+        width: 24px;
+        height: 24px;
+        border-radius: 50%;
+        background: radial-gradient(circle, rgba(239,68,68,0.9) 0%, rgba(239,68,68,0.4) 50%, transparent 70%);
+        pointer-events: none;
+        z-index: 2147483646;
+        animation: citadelle-ripple 0.6s ease-out forwards;
+      `;
+      document.body.appendChild(dot);
+
+      if (!document.getElementById("citadelle-ripple-style")) {
+        const style = document.createElement("style");
+        style.id = "citadelle-ripple-style";
+        style.textContent = `
+          @keyframes citadelle-ripple {
+            0% { transform: scale(0.3); opacity: 1; }
+            50% { transform: scale(1.8); opacity: 0.6; }
+            100% { transform: scale(2.5); opacity: 0; }
+          }
+        `;
+        document.head.appendChild(style);
+      }
+
+      setTimeout(() => dot.remove(), 700);
+    }, { dx: x, dy: y });
+  } catch (err: any) {
+    if (!isNavigationError(err)) {
+      log(`Red dot injection error: ${err.message}`, "agent");
+    }
+  }
+}
+
+async function moveCursorAndClick(page: Page, x: number, y: number) {
+  await moveCursorTo(page, x, y);
+  await delay(200);
+  await injectRedDot(page, x, y);
+  await delay(150);
+  await page.mouse.click(x, y);
+}
+
+async function geminiLocateElement(page: Page, description: string): Promise<{ x: number; y: number } | null> {
+  try {
+    const buffer = await page.screenshot({ type: "jpeg", quality: 85 });
+    const base64 = buffer.toString("base64");
+
+    const response = await ai.models.generateContent({
+      model: "gemini-3.1-pro-preview",
+      contents: [
+        {
+          role: "user",
+          parts: [
+            {
+              inlineData: { mimeType: "image/jpeg", data: base64 },
+            },
+            {
+              text: `Look at this screenshot (1280x800 viewport). Find the element described as: "${description}". Return ONLY a JSON object with "x" and "y" keys representing the pixel coordinates of the CENTER of that element. No markdown, no code fences, just raw JSON like {"x": 640, "y": 300}.`,
+            },
+          ],
+        },
+      ],
+      config: { maxOutputTokens: 256 },
+    });
+
+    const text = response.text?.trim() || "";
+    let jsonText = text.replace(/^```(?:json)?\s*/i, '').replace(/\s*```$/i, '');
+    const startBrace = jsonText.indexOf('{');
+    const endBrace = jsonText.lastIndexOf('}');
+    if (startBrace !== -1 && endBrace !== -1) {
+      jsonText = jsonText.substring(startBrace, endBrace + 1);
+    }
+    const coords = JSON.parse(jsonText);
+    if (typeof coords.x === "number" && typeof coords.y === "number") {
+      log(`Gemini located "${description}" at (${coords.x}, ${coords.y})`, "agent");
+      return { x: coords.x, y: coords.y };
+    }
+    return null;
+  } catch (err: any) {
+    log(`Gemini locate failed for "${description}": ${err.message}`, "agent");
+    return null;
   }
 }
 
@@ -275,13 +369,16 @@ async function startAgent(ws: WebSocket, userQuery: string) {
     if (inputFound) {
       const box = await searchInput.boundingBox();
       if (box) {
+        const targetX = box.x + box.width / 2;
+        const targetY = box.y + box.height / 2;
         await moveCursorTo(page, 100, 100);
         await delay(300);
-        await moveCursorTo(page, box.x + box.width / 2, box.y + box.height / 2);
+        await moveCursorAndClick(page, targetX, targetY);
         await delay(400);
+      } else {
+        await searchInput.click({ force: true });
       }
 
-      await searchInput.click({ force: true });
       await page.waitForTimeout(500);
       if (isStale()) return;
 
@@ -318,10 +415,17 @@ async function startAgent(ws: WebSocket, userQuery: string) {
     await delay(1500);
     if (isStale()) return;
 
-    await moveCursorTo(page, 400, 300);
-    await delay(800);
-    await moveCursorTo(page, 600, 350);
-    await delay(600);
+    const firstResultCoords = await geminiLocateElement(page, "the first search result title link on this legal search results page");
+    if (firstResultCoords) {
+      await moveCursorTo(page, 200, 150);
+      await delay(300);
+      await moveCursorTo(page, firstResultCoords.x, firstResultCoords.y);
+      await injectRedDot(page, firstResultCoords.x, firstResultCoords.y);
+      await delay(500);
+    } else {
+      await moveCursorTo(page, 400, 300);
+      await delay(500);
+    }
 
     let extractedResults: Array<{ caseTitle: string; court: string; date: string; url: string; snippet: string }> = [];
     try {
@@ -502,20 +606,42 @@ async function startAgent(ws: WebSocket, userQuery: string) {
           timeout: 25000,
         }).catch(() => {});
         await delay(1500);
-        const link = page.locator("article a.visitable, .search-results a[href*='/opinion/'], h3 a").first();
-        try {
-          await link.waitFor({ state: "visible", timeout: 8000 });
-          await Promise.all([
-            page.waitForNavigation({ waitUntil: "domcontentloaded", timeout: 25000 }).catch(() => {}),
-            link.click({ force: true }),
-          ]);
-        } catch {
-          log(`Search navigation failed for ${label}, analyzing search results page instead`, "agent");
+        await injectCursor(page);
+
+        const caseCoords = await geminiLocateElement(page, `the search result link titled "${targetTitle}" or the first matching case result`);
+        if (caseCoords) {
+          await moveCursorTo(page, 200, 150);
+          await delay(200);
+          await moveCursorAndClick(page, caseCoords.x, caseCoords.y);
+          await delay(2000);
+        } else {
+          const link = page.locator("article a.visitable, .search-results a[href*='/opinion/'], h3 a").first();
+          try {
+            await link.waitFor({ state: "visible", timeout: 8000 });
+            const linkBox = await link.boundingBox();
+            if (linkBox) {
+              await moveCursorAndClick(page, linkBox.x + linkBox.width / 2, linkBox.y + linkBox.height / 2);
+              await delay(2000);
+            } else {
+              await Promise.all([
+                page.waitForNavigation({ waitUntil: "domcontentloaded", timeout: 25000 }).catch(() => {}),
+                link.click({ force: true }),
+              ]);
+            }
+          } catch {
+            log(`Search navigation failed for ${label}, analyzing search results page instead`, "agent");
+          }
         }
       }
 
       await delay(1500);
       await injectCursor(page);
+      const headingCoords = await geminiLocateElement(page, "the main case title or heading on this legal opinion page");
+      if (headingCoords) {
+        await moveCursorTo(page, headingCoords.x, headingCoords.y);
+        await injectRedDot(page, headingCoords.x, headingCoords.y);
+        await delay(400);
+      }
       await safeEval(page, () => window.scrollBy(0, 800));
       await delay(1000);
 
