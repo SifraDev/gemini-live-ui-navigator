@@ -359,15 +359,12 @@ async function startAgent(ws: WebSocket, userQuery: string) {
       const responseText = geminiResponse.text?.trim() || "";
       log(`Gemini response received (${responseText.length} chars)`, "agent");
 
-      let jsonText = responseText;
-      const fenceMatch = responseText.match(/```(?:json)?\s*([\s\S]*?)```/);
-      if (fenceMatch) {
-        jsonText = fenceMatch[1].trim();
-      } else {
-        const bracketMatch = responseText.match(/\[[\s\S]*\]/);
-        if (bracketMatch) {
-          jsonText = bracketMatch[0];
-        }
+      let jsonText = responseText.trim();
+      jsonText = jsonText.replace(/^```(?:json)?\s*/i, '').replace(/\s*```$/i, '');
+      const startBracket = jsonText.indexOf('[');
+      const endBracket = jsonText.lastIndexOf(']');
+      if (startBracket !== -1 && endBracket !== -1) {
+        jsonText = jsonText.substring(startBracket, endBracket + 1);
       }
 
       const parsed = JSON.parse(jsonText);
@@ -482,15 +479,12 @@ Return ONLY a single JSON object with these keys: title, court, date, citation, 
       const responseText = geminiResponse.text?.trim() || "";
       log(`Gemini response for ${label} (${responseText.length} chars)`, "agent");
 
-      let jsonText = responseText;
-      const fenceMatch = responseText.match(/```(?:json)?\s*([\s\S]*?)```/);
-      if (fenceMatch) {
-        jsonText = fenceMatch[1].trim();
-      } else {
-        const braceMatch = responseText.match(/\{[\s\S]*\}/);
-        if (braceMatch) {
-          jsonText = braceMatch[0];
-        }
+      let jsonText = responseText.trim();
+      jsonText = jsonText.replace(/^```(?:json)?\s*/i, '').replace(/\s*```$/i, '');
+      const startBrace = jsonText.indexOf('{');
+      const endBrace = jsonText.lastIndexOf('}');
+      if (startBrace !== -1 && endBrace !== -1) {
+        jsonText = jsonText.substring(startBrace, endBrace + 1);
       }
 
       const parsed = JSON.parse(jsonText);
