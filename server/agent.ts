@@ -240,7 +240,7 @@ async function geminiLocateElement(page: Page, description: string): Promise<{ x
     const base64 = buffer.toString("base64");
 
     const response = await ai.models.generateContent({
-      model: "gemini-3.1-pro-preview",
+      model: "gemini-2.5-flash",
       contents: [
         {
           role: "user",
