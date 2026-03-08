@@ -5,11 +5,7 @@ import { GoogleGenAI } from "@google/genai";
 import { log } from "./index";
 
 const ai = new GoogleGenAI({
-  apiKey: process.env.AI_INTEGRATIONS_GEMINI_API_KEY,
-  httpOptions: {
-    apiVersion: "",
-    baseUrl: process.env.AI_INTEGRATIONS_GEMINI_BASE_URL,
-  },
+  apiKey: process.env.GOOGLE_GEMINI_API_KEY,
 });
 
 interface AgentSession {
@@ -334,7 +330,7 @@ async function startAgent(ws: WebSocket, userQuery: string) {
       const currentUrl = page.url();
 
       const geminiResponse = await ai.models.generateContent({
-        model: "gemini-3.1-pro", // o "gemini-3.1-flash" si quieres velocidad
+        model: "gemini-3.1-pro",
         contents: [
           {
             role: "user",
@@ -450,7 +446,7 @@ async function startAgent(ws: WebSocket, userQuery: string) {
       log(`Gemini analyzing ${label}...`, "agent");
 
       const geminiResponse = await ai.models.generateContent({
-        model: "gemini-2.5-flash",
+        model: "gemini-3.1-pro",
         contents: [
           {
             role: "user",
