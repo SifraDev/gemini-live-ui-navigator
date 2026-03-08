@@ -487,11 +487,22 @@ Return ONLY a single JSON object with these keys: title, court, date, citation, 
         jsonText = jsonText.substring(startBrace, endBrace + 1);
       }
 
-      const parsed = JSON.parse(jsonText);
+      let parsed: any = {};
+      try {
+        parsed = JSON.parse(jsonText);
+      } catch (parseError) {
+        log(`JSON Parse failed. Fallback to raw text extraction.`, "agent");
+        const summaryMatch = responseText.match(/"summary"\s*:\s*"([^"]*)/i);
+        parsed = {
+          summary: summaryMatch ? summaryMatch[1] + "..." : "Analysis generated but formatting failed. " + responseText.substring(0, 100),
+          precedent_title: null,
+          precedent_url: null,
+        };
+      }
       return {
         summary: parsed.summary || "",
-        precedentTitle: parsed.precedent_title || null,
-        precedentUrl: parsed.precedent_url || null,
+        precedentTitle: parsed.precedent_title || parsed.precedentTitle || null,
+        precedentUrl: parsed.precedent_url || parsed.precedentUrl || null,
       };
     };
 
