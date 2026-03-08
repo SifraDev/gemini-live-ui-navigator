@@ -204,6 +204,36 @@ async function moveCursorAndClick(page: Page, x: number, y: number) {
   await page.mouse.click(x, y);
 }
 
+async function simulateReading(page: Page, durationMs: number, stopSignal: { stopped: boolean }) {
+  const startTime = Date.now();
+  let scrollY = 300;
+  let direction = 1;
+  try {
+    while (Date.now() - startTime < durationMs && !stopSignal.stopped) {
+      const baseX = 200 + Math.random() * 600;
+      const baseY = scrollY + Math.random() * 100;
+      await page.mouse.move(baseX, baseY, { steps: 15 }).catch(() => {});
+      await delay(800 + Math.random() * 600);
+      if (stopSignal.stopped) break;
+
+      const sweepEndX = baseX + 200 + Math.random() * 300;
+      await page.mouse.move(sweepEndX, baseY + (Math.random() * 20 - 10), { steps: 25 }).catch(() => {});
+      await delay(600 + Math.random() * 500);
+      if (stopSignal.stopped) break;
+
+      if (Math.random() > 0.5) {
+        const scrollAmount = 150 + Math.random() * 200;
+        await page.mouse.wheel(0, scrollAmount * direction).catch(() => {});
+        scrollY += scrollAmount * direction * 0.3;
+        if (scrollY > 500) direction = -1;
+        if (scrollY < 200) direction = 1;
+        await delay(400 + Math.random() * 300);
+      }
+    }
+  } catch {
+  }
+}
+
 async function geminiLocateElement(page: Page, description: string): Promise<{ x: number; y: number } | null> {
   try {
     const buffer = await page.screenshot({ type: "jpeg", quality: 85 });
@@ -386,12 +416,38 @@ async function startAgent(ws: WebSocket, userQuery: string) {
       await page.waitForTimeout(500);
       if (isStale()) return;
 
-      await Promise.all([
-        page.waitForNavigation({ waitUntil: "domcontentloaded", timeout: 45000 }).catch((e) => {
-          log(`Nav warning: ${e.message}`, "agent");
-        }),
-        searchInput.press("Enter"),
-      ]);
+      const submitBtn = page.locator('button[type="submit"], input[type="submit"], button.btn-primary, #search-button, button[aria-label="Search"], form button').first();
+      let submitClicked = false;
+      try {
+        await submitBtn.waitFor({ state: "visible", timeout: 5000 });
+        const btnBox = await submitBtn.boundingBox();
+        if (btnBox) {
+          log("Moving cursor to search submit button...", "agent");
+          await moveCursorTo(page, btnBox.x + btnBox.width / 2, btnBox.y + btnBox.height / 2);
+          await delay(300);
+          await injectRedDot(page, btnBox.x + btnBox.width / 2, btnBox.y + btnBox.height / 2);
+          await delay(200);
+          await Promise.all([
+            page.waitForNavigation({ waitUntil: "domcontentloaded", timeout: 45000 }).catch((e) => {
+              log(`Nav warning: ${e.message}`, "agent");
+            }),
+            page.mouse.click(btnBox.x + btnBox.width / 2, btnBox.y + btnBox.height / 2),
+          ]);
+          submitClicked = true;
+        }
+      } catch {
+        log("Submit button not found via locator", "agent");
+      }
+
+      if (!submitClicked) {
+        log("Falling back to Enter key submit", "agent");
+        await Promise.all([
+          page.waitForNavigation({ waitUntil: "domcontentloaded", timeout: 45000 }).catch((e) => {
+            log(`Nav warning: ${e.message}`, "agent");
+          }),
+          searchInput.press("Enter"),
+        ]);
+      }
     } else {
       log("Search input not found, using direct URL", "agent");
       await page.goto(`https://www.courtlistener.com/?q=${encodeURIComponent(searchQuery)}&type=o`, {
@@ -596,42 +652,56 @@ async function startAgent(ws: WebSocket, userQuery: string) {
     }> => {
       log(`Navigating to ${label}: "${targetTitle}" (url=${targetUrl || "MISSING"})`, "agent");
 
-      if (targetUrl && targetUrl.startsWith("http")) {
-        await page.goto(targetUrl, { waitUntil: "domcontentloaded", timeout: 25000 }).catch((e) => {
-          log(`Nav warning (${label}): ${e.message}`, "agent");
-        });
-      } else {
-        await page.goto(`https://www.courtlistener.com/?q=${encodeURIComponent(targetTitle)}&type=o`, {
-          waitUntil: "domcontentloaded",
-          timeout: 25000,
-        }).catch(() => {});
-        await delay(1500);
-        await injectCursor(page);
+      let navigated = false;
 
-        const caseCoords = await geminiLocateElement(page, `the search result link titled "${targetTitle}" or the first matching case result`);
+      if (targetUrl && targetUrl.startsWith("http")) {
+        const linkSelector = `a[href="${new URL(targetUrl).pathname}"], a[href="${targetUrl}"]`;
+        const domLink = page.locator(linkSelector).first();
+        try {
+          await domLink.waitFor({ state: "visible", timeout: 5000 });
+          const linkBox = await domLink.boundingBox();
+          if (linkBox) {
+            log(`Found DOM link for ${label}, clicking at (${linkBox.x + linkBox.width / 2}, ${linkBox.y + linkBox.height / 2})`, "agent");
+            await moveCursorTo(page, 200, 150);
+            await delay(300);
+            await moveCursorTo(page, linkBox.x + linkBox.width / 2, linkBox.y + linkBox.height / 2);
+            await delay(500);
+            await injectRedDot(page, linkBox.x + linkBox.width / 2, linkBox.y + linkBox.height / 2);
+            await delay(300);
+            await Promise.all([
+              page.waitForNavigation({ waitUntil: "domcontentloaded", timeout: 25000 }).catch(() => {}),
+              page.mouse.click(linkBox.x + linkBox.width / 2, linkBox.y + linkBox.height / 2),
+            ]);
+            navigated = true;
+          }
+        } catch {
+          log(`DOM link not found for ${label}, trying Gemini locate...`, "agent");
+        }
+      }
+
+      if (!navigated) {
+        const caseCoords = await geminiLocateElement(page, `the search result link titled "${targetTitle}" or the closest matching case name`);
         if (caseCoords) {
           await moveCursorTo(page, 200, 150);
-          await delay(200);
-          await moveCursorAndClick(page, caseCoords.x, caseCoords.y);
-          await delay(2000);
-        } else {
-          const link = page.locator("article a.visitable, .search-results a[href*='/opinion/'], h3 a").first();
-          try {
-            await link.waitFor({ state: "visible", timeout: 8000 });
-            const linkBox = await link.boundingBox();
-            if (linkBox) {
-              await moveCursorAndClick(page, linkBox.x + linkBox.width / 2, linkBox.y + linkBox.height / 2);
-              await delay(2000);
-            } else {
-              await Promise.all([
-                page.waitForNavigation({ waitUntil: "domcontentloaded", timeout: 25000 }).catch(() => {}),
-                link.click({ force: true }),
-              ]);
-            }
-          } catch {
-            log(`Search navigation failed for ${label}, analyzing search results page instead`, "agent");
-          }
+          await delay(300);
+          await moveCursorTo(page, caseCoords.x, caseCoords.y);
+          await delay(500);
+          await injectRedDot(page, caseCoords.x, caseCoords.y);
+          await delay(300);
+          await Promise.all([
+            page.waitForNavigation({ waitUntil: "domcontentloaded", timeout: 25000 }).catch(() => {}),
+            page.mouse.click(caseCoords.x, caseCoords.y),
+          ]);
+          navigated = true;
         }
+      }
+
+      if (!navigated) {
+        log(`All click methods failed for ${label}, using page.goto as last resort`, "agent");
+        const fallbackUrl = targetUrl && targetUrl.startsWith("http")
+          ? targetUrl
+          : `https://www.courtlistener.com/?q=${encodeURIComponent(targetTitle)}&type=o`;
+        await page.goto(fallbackUrl, { waitUntil: "domcontentloaded", timeout: 25000 }).catch(() => {});
       }
 
       await delay(1500);
@@ -650,6 +720,9 @@ async function startAgent(ws: WebSocket, userQuery: string) {
       const currentUrl = page.url();
 
       log(`Gemini analyzing ${label}...`, "agent");
+
+      const readingStop = { stopped: false };
+      const readingAnimation = simulateReading(page, 60000, readingStop);
 
       const geminiResponse = await ai.models.generateContent({
         model: "gemini-3.1-pro-preview",
@@ -677,6 +750,9 @@ Return ONLY a single JSON object with these keys: title, court, date, citation, 
           maxOutputTokens: 4096,
         },
       });
+
+      readingStop.stopped = true;
+      await readingAnimation.catch(() => {});
 
       const responseText = geminiResponse.text?.trim() || "";
       log(`Gemini response for ${label} (${responseText.length} chars)`, "agent");
