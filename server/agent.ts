@@ -596,18 +596,15 @@ Return:
 
     sendMessage(ws, { type: "STEP", step: 7, label: "Compiling Results" });
 
-    session.stopped = true;
-    if (capturePromise) await capturePromise;
-
-    const finalBuffer = await safeScreenshot(page);
-    if (finalBuffer) {
-      sendMessage(ws, { type: "FRAME", image: finalBuffer.toString("base64") });
-    }
+    sendMessage(ws, { type: "RESULTS", payload: extractedResults });
 
     sendMessage(ws, {
       type: "COMPLETE",
-      message: `Task Completed. Strategically analyzed ${extractedResults.length} cases using the Newest/Oldest method for "${searchQuery}".`,
+      message: `Task Completed. Strategically analyzed ${extractedResults.length} cases.`,
     });
+
+    session.stopped = true;
+    if (capturePromise) await capturePromise.catch(() => {});
   } catch (err: any) {
     log(`Agent error: ${err.message}`, "agent");
     if (!isNavigationError(err)) {
