@@ -334,7 +334,7 @@ async function startAgent(ws: WebSocket, userQuery: string) {
       const currentUrl = page.url();
 
       const geminiResponse = await ai.models.generateContent({
-        model: "gemini-2.5-flash",
+        model: "gemini-3.1-pro", // o "gemini-3.1-flash" si quieres velocidad
         contents: [
           {
             role: "user",
@@ -352,7 +352,7 @@ async function startAgent(ws: WebSocket, userQuery: string) {
           },
         ],
         config: {
-          maxOutputTokens: 2048,
+          maxOutputTokens: 4096,
         },
       });
 
@@ -472,7 +472,7 @@ Return ONLY a single JSON object with these keys: title, court, date, citation, 
           },
         ],
         config: {
-          maxOutputTokens: 1536,
+          maxOutputTokens: 4096,
         },
       });
 
