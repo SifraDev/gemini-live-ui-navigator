@@ -396,238 +396,179 @@ async function startAgent(ws: WebSocket, userQuery: string) {
       sendMessage(ws, { type: "RESULTS", payload: extractedResults });
     }
 
-    sendMessage(ws, { type: "STEP", step: 6, label: "Tracing Precedent Chain..." });
+    sendMessage(ws, { type: "STEP", step: 6, label: "Strategic Analysis: Newest, Precedent, and Original Case" });
 
-    const MAX_DEPTH = 4;
-    let chainDepth = 0;
+    const parseDate = (d: string): number => {
+      const ts = Date.parse(d);
+      return isNaN(ts) ? 0 : ts;
+    };
 
-    while (chainDepth < MAX_DEPTH && !isStale()) {
-      chainDepth++;
-      sendMessage(ws, {
-        type: "STEP_DYNAMIC",
-        label: `Tracing Precedent Chain (Depth ${chainDepth}/${MAX_DEPTH})...`,
+    const sorted = [...extractedResults].sort((a, b) => parseDate(b.date) - parseDate(a.date));
+    const newestCase = sorted[0] || extractedResults[0];
+    const oldestCase = sorted[sorted.length - 1] || extractedResults[extractedResults.length - 1];
+
+    const analyzeCase = async (caseUrl: string, promptTask: string, label: string): Promise<{
+      summary: string;
+      precedentTitle: string | null;
+      precedentUrl: string | null;
+    }> => {
+      log(`Navigating to ${label}: ${caseUrl}`, "agent");
+      await page.goto(caseUrl, { waitUntil: "domcontentloaded", timeout: 25000 }).catch((e) => {
+        log(`Nav warning (${label}): ${e.message}`, "agent");
       });
 
-      if (chainDepth === 1) {
-        const firstCaseLink = page.locator("article a.visitable, .search-results a[href*='/opinion/'], .result-title a, h3 a").first();
-        let linkClicked = false;
-        try {
-          await firstCaseLink.waitFor({ state: "visible", timeout: 8000 });
-          const linkBox = await firstCaseLink.boundingBox();
-          if (linkBox) {
-            await moveCursorTo(page, linkBox.x + linkBox.width / 2, linkBox.y + linkBox.height / 2);
-            await delay(400);
-          }
-          await Promise.all([
-            page.waitForNavigation({ waitUntil: "domcontentloaded", timeout: 30000 }).catch((e) => {
-              log(`Nav warning (case click): ${e.message}`, "agent");
-            }),
-            firstCaseLink.click({ force: true }),
-          ]);
-          linkClicked = true;
-        } catch (err: any) {
-          log(`Failed to click first case: ${err.message}`, "agent");
-        }
-
-        if (!linkClicked) {
-          if (extractedResults.length > 0 && extractedResults[0].url) {
-            log("Falling back to direct URL navigation for first case", "agent");
-            await page.goto(extractedResults[0].url, {
-              waitUntil: "domcontentloaded",
-              timeout: 20000,
-            }).catch(() => {});
-          } else {
-            log("No case link available, ending precedent chain", "agent");
-            break;
-          }
-        }
-      }
-
       await delay(1500);
-      if (isStale()) break;
-
       await injectCursor(page);
+      await safeEval(page, () => window.scrollBy(0, 800));
+      await delay(1000);
 
-      await moveCursorTo(page, 400, 300);
-      await delay(500);
+      const visionBuffer = await page.screenshot({ type: "jpeg", quality: 100 });
+      const visionBase64 = visionBuffer.toString("base64");
+      const currentUrl = page.url();
 
-      const citationLink = page.locator("article a[href*='/opinion/'], .opinion-content a[href*='/opinion/'], a.citation").first();
-      try {
-        await citationLink.waitFor({ state: "attached", timeout: 5000 });
-        await citationLink.scrollIntoViewIfNeeded();
-        await safeEval(page, () => window.scrollBy(0, -150));
-        await delay(1200);
-        log("Smart scroll to first citation successful", "agent");
-      } catch {
-        log("Could not find a citation link to snap to, falling back to deep scroll", "agent");
-        await safeEval(page, () => window.scrollBy(0, 2500));
-        await delay(1000);
-      }
+      log(`Gemini analyzing ${label}...`, "agent");
 
-      let caseData: { caseTitle: string; court: string; date: string; url: string; snippet: string } | null = null;
-      let nextPrecedentUrl: string | null = null;
-      let nextPrecedentTitle: string | null = null;
-
-      const analyzeCasePage = async (attemptLabel: string) => {
-        const visionBuffer = await page.screenshot({ type: "jpeg", quality: 100 });
-        const visionBase64 = visionBuffer.toString("base64");
-        const currentUrl = page.url();
-
-        log(`Gemini analyzing case page (Depth ${chainDepth}, ${attemptLabel})...`, "agent");
-
-        const geminiResponse = await ai.models.generateContent({
-          model: "gemini-2.5-flash",
-          contents: [
-            {
-              role: "user",
-              parts: [
-                {
-                  inlineData: {
-                    mimeType: "image/jpeg",
-                    data: visionBase64,
-                  },
+      const geminiResponse = await ai.models.generateContent({
+        model: "gemini-2.5-flash",
+        contents: [
+          {
+            role: "user",
+            parts: [
+              {
+                inlineData: {
+                  mimeType: "image/jpeg",
+                  data: visionBase64,
                 },
-                {
-                  text: `You are a Legal Case Analyst AI. You are looking at a legal case/opinion page from CourtListener (${currentUrl}).
+              },
+              {
+                text: `You are a Legal Case Analyst AI. You are looking at a legal case/opinion page from CourtListener (${currentUrl}).
 
-Task 1: Extract the details of THIS case from the page. Return:
-- "title": the case name/title
-- "court": the court
-- "date": the filing/decision date
-- "citation": any citation string visible
-- "url": "${currentUrl}"
+${promptTask}
 
-Task 2: Aggressively identify ANY cited precedent — a prior case referenced in this opinion. Search the ENTIRE visible text for:
-- Standard legal citations (e.g., "Smith v. Jones", "123 F.3d 456")
-- "Cited Authorities", "Cases Cited", or "References" sections
-- Hyperlinked case names pointing to other CourtListener opinion pages
-- Inline case mentions in the opinion body text using "v." format
-Pick the MOST PROMINENT or first clearly identifiable prior case. Return:
-- "precedent_title": the full case name (e.g., "Smith v. Jones") — return null ONLY if absolutely zero prior cases are mentioned anywhere on the visible page
-- "precedent_url": if there is a clickable link to another CourtListener opinion page, provide the full URL (or null if no direct link)
-
-Return ONLY a single JSON object (not an array) with these keys: title, court, date, citation, url, precedent_title, precedent_url. No markdown, no code fences, just raw JSON.`,
-                },
-              ],
-            },
-          ],
-          config: {
-            maxOutputTokens: 1024,
+Return ONLY a single JSON object with these keys: title, court, date, citation, summary, precedent_title, precedent_url. No markdown, no code fences, just raw JSON.`,
+              },
+            ],
           },
-        });
+        ],
+        config: {
+          maxOutputTokens: 1536,
+        },
+      });
 
-        const responseText = geminiResponse.text?.trim() || "";
-        log(`Gemini precedent response (${responseText.length} chars, Depth ${chainDepth}, ${attemptLabel})`, "agent");
+      const responseText = geminiResponse.text?.trim() || "";
+      log(`Gemini response for ${label} (${responseText.length} chars)`, "agent");
 
-        let jsonText = responseText;
-        const fenceMatch = responseText.match(/```(?:json)?\s*([\s\S]*?)```/);
-        if (fenceMatch) {
-          jsonText = fenceMatch[1].trim();
-        } else {
-          const braceMatch = responseText.match(/\{[\s\S]*\}/);
-          if (braceMatch) {
-            jsonText = braceMatch[0];
-          }
+      let jsonText = responseText;
+      const fenceMatch = responseText.match(/```(?:json)?\s*([\s\S]*?)```/);
+      if (fenceMatch) {
+        jsonText = fenceMatch[1].trim();
+      } else {
+        const braceMatch = responseText.match(/\{[\s\S]*\}/);
+        if (braceMatch) {
+          jsonText = braceMatch[0];
         }
+      }
 
-        const parsed = JSON.parse(jsonText);
-
-        if (!caseData) {
-          caseData = {
-            caseTitle: parsed.title || "Untitled Case",
-            court: parsed.court || "",
-            date: parsed.date || "",
-            url: parsed.url || currentUrl,
-            snippet: parsed.citation || "",
-          };
-        }
-
-        return {
-          precedentTitle: parsed.precedent_title || null,
-          precedentUrl: parsed.precedent_url || null,
-        };
+      const parsed = JSON.parse(jsonText);
+      return {
+        summary: parsed.summary || "",
+        precedentTitle: parsed.precedent_title || null,
+        precedentUrl: parsed.precedent_url || null,
       };
+    };
 
+    const newestPrompt = `Extract the case details and provide a 2-3 sentence legal summary of the ruling/opinion visible on this page.
+Return:
+- "title": case name
+- "court": court name
+- "date": filing/decision date
+- "citation": any citation string
+- "summary": a concise 2-3 sentence summary of the case's legal significance
+
+Also identify the MOST PROMINENT cited precedent in the visible text. Look for "v." case names, legal citations (e.g., "123 F.3d 456"), "Cited Authorities" sections, or hyperlinked case references.
+- "precedent_title": the full case name (e.g., "Smith v. Jones") or null if none found
+- "precedent_url": full CourtListener URL if a link is visible, or null`;
+
+    const precedentPrompt = `Extract the case details and provide a 2-3 sentence legal summary of the ruling/opinion visible on this page.
+Return:
+- "title": case name
+- "court": court name
+- "date": filing/decision date
+- "citation": any citation string
+- "summary": a concise 2-3 sentence summary of this precedent's legal significance
+- "precedent_title": null
+- "precedent_url": null`;
+
+    const oldestPrompt = `Extract the case details and provide a 2-3 sentence legal summary of the ruling/opinion visible on this page.
+Return:
+- "title": case name
+- "court": court name
+- "date": filing/decision date
+- "citation": any citation string
+- "summary": a concise 2-3 sentence summary of this foundational case's legal significance
+- "precedent_title": null
+- "precedent_url": null`;
+
+    let precedentUrl: string | null = null;
+    let analysisCount = 0;
+
+    if (newestCase?.url) {
+      sendMessage(ws, { type: "STEP_DYNAMIC", label: "Analyzing Newest Case..." });
       try {
-        const firstAttempt = await analyzeCasePage("scroll-1");
-        nextPrecedentTitle = firstAttempt.precedentTitle;
-        nextPrecedentUrl = firstAttempt.precedentUrl;
+        const result = await analyzeCase(newestCase.url, newestPrompt, "Newest Case");
+        analysisCount++;
+        newestCase.snippet = result.summary || newestCase.snippet;
+        precedentUrl = result.precedentUrl;
+        const precedentTitle = result.precedentTitle;
+        log(`Newest case analyzed. Precedent found: "${precedentTitle || "NONE"}" (URL: ${precedentUrl || "NONE"})`, "agent");
 
-        if (!nextPrecedentTitle && !nextPrecedentUrl) {
-          log(`No precedent on first scroll at Depth ${chainDepth}, scrolling deeper and retrying...`, "agent");
-          await safeEval(page, () => window.scrollBy(0, 1000));
-          await delay(1000);
-
-          const secondAttempt = await analyzeCasePage("scroll-2");
-          nextPrecedentTitle = secondAttempt.precedentTitle;
-          nextPrecedentUrl = secondAttempt.precedentUrl;
+        if (!precedentUrl && precedentTitle) {
+          precedentUrl = `https://www.courtlistener.com/?q=${encodeURIComponent(precedentTitle)}&type=o`;
+          log(`No direct precedent URL, will search: ${precedentUrl}`, "agent");
         }
 
-        log(`Depth ${chainDepth}: "${caseData?.caseTitle}" → precedent: "${nextPrecedentTitle || "NONE"}"`, "agent");
-      } catch (err: any) {
-        log(`Gemini precedent analysis error (Depth ${chainDepth}): ${err.message}`, "agent");
-      }
-
-      if (caseData) {
-        extractedResults.push(caseData);
         sendMessage(ws, { type: "RESULTS", payload: extractedResults });
+      } catch (err: any) {
+        log(`Newest case analysis error: ${err.message}`, "agent");
       }
-
-      if (!nextPrecedentTitle && !nextPrecedentUrl) {
-        log(`No precedent found at Depth ${chainDepth} after retry, ending chain`, "agent");
-        break;
-      }
-
-      if (isStale()) break;
-
-      let navigated = false;
-
-      if (nextPrecedentUrl && nextPrecedentUrl.includes("courtlistener.com")) {
-        log(`Navigating to precedent URL: ${nextPrecedentUrl}`, "agent");
-        try {
-          await page.goto(nextPrecedentUrl, {
-            waitUntil: "domcontentloaded",
-            timeout: 25000,
-          });
-          navigated = true;
-        } catch (err: any) {
-          log(`Direct precedent navigation failed: ${err.message}`, "agent");
-        }
-      }
-
-      if (!navigated && nextPrecedentTitle) {
-        log(`Searching for precedent: "${nextPrecedentTitle}"`, "agent");
-        try {
-          await page.goto(
-            `https://www.courtlistener.com/?q=${encodeURIComponent(nextPrecedentTitle)}&type=o`,
-            { waitUntil: "domcontentloaded", timeout: 25000 }
-          );
-
-          await delay(1500);
-
-          const resultLink = page.locator("article a.visitable, .search-results a[href*='/opinion/'], h3 a").first();
-          try {
-            await resultLink.waitFor({ state: "visible", timeout: 8000 });
-            await Promise.all([
-              page.waitForNavigation({ waitUntil: "domcontentloaded", timeout: 25000 }).catch(() => {}),
-              resultLink.click({ force: true }),
-            ]);
-            navigated = true;
-          } catch {
-            log(`Could not find search result for precedent: "${nextPrecedentTitle}"`, "agent");
-          }
-        } catch (err: any) {
-          log(`Precedent search navigation failed: ${err.message}`, "agent");
-        }
-      }
-
-      if (!navigated) {
-        log(`Failed to navigate to precedent at Depth ${chainDepth}, ending chain`, "agent");
-        break;
-      }
+      if (isStale()) return;
     }
 
-    log(`Precedent chain complete: ${chainDepth} depth(s), ${extractedResults.length} total cases`, "agent");
+    if (precedentUrl) {
+      sendMessage(ws, { type: "STEP_DYNAMIC", label: "Analyzing Cited Precedent..." });
+      try {
+        const result = await analyzeCase(precedentUrl, precedentPrompt, "Cited Precedent");
+        analysisCount++;
+        extractedResults.push({
+          caseTitle: `[Precedent] ${result.summary ? result.summary.split(".")[0] : "Cited Case"}`,
+          court: "",
+          date: "",
+          url: precedentUrl,
+          snippet: result.summary || "",
+        });
+        sendMessage(ws, { type: "RESULTS", payload: extractedResults });
+        log("Cited precedent analyzed successfully", "agent");
+      } catch (err: any) {
+        log(`Precedent analysis error: ${err.message}`, "agent");
+      }
+      if (isStale()) return;
+    }
+
+    if (oldestCase?.url && oldestCase.url !== newestCase?.url) {
+      sendMessage(ws, { type: "STEP_DYNAMIC", label: "Analyzing Original/Oldest Case..." });
+      try {
+        const result = await analyzeCase(oldestCase.url, oldestPrompt, "Oldest Case");
+        analysisCount++;
+        oldestCase.snippet = result.summary || oldestCase.snippet;
+        sendMessage(ws, { type: "RESULTS", payload: extractedResults });
+        log("Oldest case analyzed successfully", "agent");
+      } catch (err: any) {
+        log(`Oldest case analysis error: ${err.message}`, "agent");
+      }
+      if (isStale()) return;
+    }
+
+    log(`Strategic analysis complete: ${analysisCount} cases analyzed, ${extractedResults.length} total results`, "agent");
 
     sendMessage(ws, { type: "STEP", step: 7, label: "Compiling Results" });
 

@@ -32,7 +32,7 @@ A B2B legal tech web application with a clean, minimalist Perplexity-style inter
 3. Navigate to CourtListener - go to courtlistener.com, inject cursor
 4. Execute Search Query - locator-based fill + press Enter on input
 5. **Gemini Multimodal: Visually Analyzing Documents** - screenshot → Gemini vision → JSON extraction of search results
-6. **Trace Precedent Chain (Depth 1-4)** - click first case, Gemini reads case page + identifies cited precedent, navigates to precedent, repeats up to MAX_DEPTH=4 with NO_PRECEDENT_FOUND stop condition
+6. **Strategic Analysis: Newest, Precedent, and Original Case** - sorts results by date, navigates to newest case (Gemini extracts summary + finds cited precedent), navigates to precedent URL (Gemini summarizes), navigates to oldest case (Gemini summarizes). Pure page.goto navigation, no DOM clicking
 7. Compile Results - finalize and send completion with full chain data
 
 ## Project Structure
