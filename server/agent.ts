@@ -325,66 +325,143 @@ async function startAgent(ws: WebSocket, userQuery: string) {
 
     let extractedResults: Array<{ caseTitle: string; court: string; date: string; url: string; snippet: string }> = [];
     try {
-      const visionBuffer = await page.screenshot({ type: "jpeg", quality: 100 });
-      const visionBase64 = visionBuffer.toString("base64");
+      log("Extracting search results from DOM...", "agent");
 
-      log("Sending screenshot to Gemini for multimodal analysis...", "agent");
+      const domResults = await page.evaluate(() => {
+        const cases: Array<{ title: string; url: string; date: string; court: string; citation: string }> = [];
+        const articles = document.querySelectorAll("article");
 
-      const currentUrl = page.url();
+        articles.forEach((article) => {
+          if (cases.length >= 5) return;
 
-      const geminiResponse = await ai.models.generateContent({
-        model: "gemini-3.1-pro-preview",
-        contents: [
-          {
-            role: "user",
-            parts: [
-              {
-                inlineData: {
-                  mimeType: "image/jpeg",
-                  data: visionBase64,
-                },
-              },
-              {
-                text: `You are a highly precise Legal UI Navigator AI. Look at this screenshot of a legal database search result page from CourtListener (${currentUrl}). Extract the top 3 to 5 legal cases you see on the screen. Return ONLY a strict JSON array of objects with the following keys: "title" (Case Title), "court" (Court Name), "date" (Filing Date), "citation" (Legal citation string), and "url" (reconstruct the CourtListener URL as https://www.courtlistener.com/opinion/[id]/[slug]/ if you can read the link, otherwise leave empty). Do not return markdown formatting, code fences, or any text before/after the JSON. Only output the raw JSON array.`,
-              },
-            ],
-          },
-        ],
-        config: {
-          maxOutputTokens: 4096,
-        },
+          const linkEl = article.querySelector("a.visitable") || article.querySelector("h3 a") || article.querySelector("a[href*='/opinion/']");
+          const title = linkEl?.textContent?.trim() || "";
+          let url = linkEl?.getAttribute("href") || "";
+          if (url && !url.startsWith("http")) {
+            url = `https://www.courtlistener.com${url}`;
+          }
+
+          const timeEl = article.querySelector("time[datetime]");
+          const date = timeEl?.getAttribute("datetime") || timeEl?.textContent?.trim() || "";
+
+          let court = "";
+          const metaValues = article.querySelectorAll(".meta-data-value");
+          metaValues.forEach((mv) => {
+            const label = mv.previousElementSibling;
+            if (label && label.textContent?.toLowerCase().includes("court")) {
+              court = mv.textContent?.trim() || "";
+            }
+          });
+          if (!court) {
+            const titleText = linkEl?.textContent || "";
+            const courtMatch = titleText.match(/\(([^)]+)\)\s*$/);
+            if (courtMatch) court = courtMatch[1];
+          }
+
+          let citation = "";
+          const citationHeaders = article.querySelectorAll(".meta-data-header");
+          citationHeaders.forEach((ch) => {
+            if (ch.textContent?.toLowerCase().includes("citation")) {
+              const val = ch.nextElementSibling;
+              if (val) citation = val.textContent?.trim() || "";
+            }
+          });
+
+          if (title && url) {
+            cases.push({ title, url, date, court, citation });
+          }
+        });
+
+        if (cases.length === 0) {
+          const links = document.querySelectorAll("a[href*='/opinion/']");
+          links.forEach((link) => {
+            if (cases.length >= 5) return;
+            const title = link.textContent?.trim() || "";
+            let url = link.getAttribute("href") || "";
+            if (url && !url.startsWith("http")) {
+              url = `https://www.courtlistener.com${url}`;
+            }
+            if (title && url && title.length > 5) {
+              cases.push({ title, url, date: "", court: "", citation: "" });
+            }
+          });
+        }
+
+        return cases;
       });
 
-      const responseText = geminiResponse.text?.trim() || "";
-      log(`Gemini response received (${responseText.length} chars)`, "agent");
+      log(`DOM extracted ${domResults.length} cases with absolute URLs`, "agent");
 
-      let jsonText = responseText.trim();
-      jsonText = jsonText.replace(/^```(?:json)?\s*/i, '').replace(/\s*```$/i, '');
-      const startBracket = jsonText.indexOf('[');
-      const endBracket = jsonText.lastIndexOf(']');
-      if (startBracket !== -1 && endBracket !== -1) {
-        jsonText = jsonText.substring(startBracket, endBracket + 1);
+      if (domResults.length > 0) {
+        extractedResults = domResults.slice(0, 5).map((item) => ({
+          caseTitle: item.title,
+          court: item.court,
+          date: item.date,
+          url: item.url,
+          snippet: item.citation,
+        }));
+        log(`Cases: ${extractedResults.map(r => `"${r.caseTitle}" (${r.url})`).join(", ")}`, "agent");
       }
 
-      const parsed = JSON.parse(jsonText);
+      if (extractedResults.length === 0) {
+        log("DOM extraction returned 0 results, falling back to Gemini Vision...", "agent");
 
-      if (Array.isArray(parsed) && parsed.length > 0) {
-        extractedResults = parsed.slice(0, 5).map((item: any) => ({
-          caseTitle: item.title || item.caseTitle || "Untitled Case",
-          court: item.court || "",
-          date: item.date || "",
-          url: item.url || "",
-          snippet: item.citation || item.snippet || "",
-        }));
-        log(`Gemini extracted ${extractedResults.length} cases via vision`, "agent");
-      } else {
-        log("Gemini returned empty or non-array response", "agent");
+        const visionBuffer = await page.screenshot({ type: "jpeg", quality: 100 });
+        const visionBase64 = visionBuffer.toString("base64");
+        const currentUrl = page.url();
+
+        const geminiResponse = await ai.models.generateContent({
+          model: "gemini-3.1-pro-preview",
+          contents: [
+            {
+              role: "user",
+              parts: [
+                {
+                  inlineData: {
+                    mimeType: "image/jpeg",
+                    data: visionBase64,
+                  },
+                },
+                {
+                  text: `You are a highly precise Legal UI Navigator AI. Look at this screenshot of a legal database search result page from CourtListener (${currentUrl}). Extract the top 3 to 5 legal cases you see on the screen. Return ONLY a strict JSON array of objects with the following keys: "title" (Case Title), "court" (Court Name), "date" (Filing Date), "citation" (Legal citation string), and "url" (leave empty if unknown). Do not return markdown formatting, code fences, or any text before/after the JSON. Only output the raw JSON array.`,
+                },
+              ],
+            },
+          ],
+          config: {
+            maxOutputTokens: 4096,
+          },
+        });
+
+        const responseText = geminiResponse.text?.trim() || "";
+        log(`Gemini vision fallback response (${responseText.length} chars)`, "agent");
+
+        let jsonText = responseText.trim();
+        jsonText = jsonText.replace(/^```(?:json)?\s*/i, '').replace(/\s*```$/i, '');
+        const startBracket = jsonText.indexOf('[');
+        const endBracket = jsonText.lastIndexOf(']');
+        if (startBracket !== -1 && endBracket !== -1) {
+          jsonText = jsonText.substring(startBracket, endBracket + 1);
+        }
+
+        const parsed = JSON.parse(jsonText);
+
+        if (Array.isArray(parsed) && parsed.length > 0) {
+          extractedResults = parsed.slice(0, 5).map((item: any) => ({
+            caseTitle: item.title || item.caseTitle || "Untitled Case",
+            court: item.court || "",
+            date: item.date || "",
+            url: item.url || "",
+            snippet: item.citation || item.snippet || "",
+          }));
+          log(`Gemini vision fallback extracted ${extractedResults.length} cases`, "agent");
+        }
       }
     } catch (err: any) {
       if (isNavigationError(err)) {
-        log("Vision extraction skipped (page navigating)", "agent");
+        log("Extraction skipped (page navigating)", "agent");
       } else {
-        log(`Gemini vision extraction error: ${err.message}`, "agent");
+        log(`Extraction error: ${err.message}`, "agent");
       }
     }
 
